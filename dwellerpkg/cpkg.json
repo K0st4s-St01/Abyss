@@ -1,0 +1,7 @@
+{
+  "name": "dwellerpkg",
+  "version": "0.1.0",
+  "compiler": "gcc",
+  "source": ["src"],
+  "include": ["include"]
+}
