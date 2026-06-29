@@ -34,6 +34,7 @@ typedef struct {
     PkgGenericParam *generic_params;
     int generic_param_count;
     bool is_extern;
+    bool is_variadic;
 } PkgFunc;
 
 typedef struct {
@@ -99,6 +100,15 @@ bool pkg_build_static(const char **source_files, int source_count,
 bool pkg_build_shared(const char **source_files, int source_count,
                       const char *output_path, const char *package_name,
                       const char *version);
+
+/* Build an executable from source files.
+   Compiles each .as to .o via abyssc, then links with clang.
+   link_libs: array of library names to link (e.g. "stdlib"), may be NULL
+   link_lib_count: number of link libraries
+ */
+bool pkg_build_executable(const char **source_files, int source_count,
+                          const char *output_path,
+                          const char **link_libs, int link_lib_count);
 
 /* Install a library file into the package directory.
    src_path: path to the .abyss_a or .abyss_so file

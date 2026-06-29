@@ -132,6 +132,24 @@ Expr *expr_new_assign(char *name, Expr *value, SourceLocation loc) {
     return e;
 }
 
+Expr *expr_new_new(char *type_name, ExprList *dims, SourceLocation loc) {
+    Expr *e = malloc(sizeof(Expr));
+    e->type = EXPR_NEW;
+    e->loc = loc;
+    e->data.new_expr.type_name = str_dup(type_name);
+    e->data.new_expr.dims = dims;
+    return e;
+}
+
+Expr *expr_new_delete(Expr *operand, int dim_count, SourceLocation loc) {
+    Expr *e = malloc(sizeof(Expr));
+    e->type = EXPR_DELETE;
+    e->loc = loc;
+    e->data.delete_expr.operand = operand;
+    e->data.delete_expr.dim_count = dim_count;
+    return e;
+}
+
 void expr_free(Expr *expr) {
     if (!expr) return;
     switch (expr->type) {
@@ -172,6 +190,13 @@ void expr_free(Expr *expr) {
         case EXPR_ASSIGN:
             free(expr->data.assign.name);
             expr_free(expr->data.assign.value);
+            break;
+        case EXPR_NEW:
+            free(expr->data.new_expr.type_name);
+            expr_list_free(expr->data.new_expr.dims);
+            break;
+        case EXPR_DELETE:
+            expr_free(expr->data.delete_expr.operand);
             break;
     }
     free(expr);
@@ -570,7 +595,7 @@ void generic_param_list_free(GenericParamList *list) {
 
 Decl *decl_new_func(char *return_type, char *name, FuncParamList *params,
                     GenericParamList *generic_params, Stmt *body,
-                    DecoratorList *decorators, SourceLocation loc) {
+                    DecoratorList *decorators, int is_extern, int is_variadic, SourceLocation loc) {
     Decl *d = malloc(sizeof(Decl));
     d->type = DECL_FUNC;
     d->loc = loc;
@@ -580,6 +605,8 @@ Decl *decl_new_func(char *return_type, char *name, FuncParamList *params,
     d->data.func.generic_params = generic_params;
     d->data.func.body = body;
     d->data.func.decorators = decorators;
+    d->data.func.is_extern = is_extern;
+    d->data.func.is_variadic = is_variadic;
     return d;
 }
 
@@ -682,6 +709,22 @@ Program *program_new(char *filename) {
 
 void program_add_decl(Program *program, Decl *decl) {
     decl_list_append(&program->decls, decl);
+}
+
+void program_insert_decl_after(Program *program, Decl *after, Decl *decl) {
+    if (!after) { program_add_decl(program, decl); return; }
+    DeclList *dl = program->decls;
+    while (dl) {
+        if (dl->decl == after) {
+            DeclList *new_node = malloc(sizeof(DeclList));
+            new_node->decl = decl;
+            new_node->next = dl->next;
+            dl->next = new_node;
+            return;
+        }
+        dl = dl->next;
+    }
+    program_add_decl(program, decl);
 }
 
 void program_free(Program *program) {

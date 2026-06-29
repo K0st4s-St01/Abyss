@@ -30,10 +30,10 @@ bool token_is_literal(Token *token){
 }
 bool token_is_keyword(Token *token){
   return token_is_primitive_type(token) ||
-          between(token->type,If,Self);
+          between(token->type,If,Delete);
 }
 bool token_is_operator(Token *token){
-  return between(token->type,Arrow,EqualsEquals);
+  return between(token->type,Arrow,Tilde);
 }
 bool token_is_punctuation(Token *token){
   return between(token->type,Comma,RBracket);

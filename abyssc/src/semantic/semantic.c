@@ -4,6 +4,12 @@
 #include <string.h>
 #include <stdarg.h>
 
+static bool is_assignment_op(TokenType op) {
+    return op == Equals || op == PlusEquals || op == MinusEquals ||
+           op == StarEquals || op == SlashEquals || op == AmpersandEquals ||
+           op == PercentEquals || op == PipeEquals || op == CaretEquals;
+}
+
 /* ── Hash table / symbol table ──────────────────────────────── */
 
 #define BUCKETS 64
@@ -13,6 +19,7 @@ typedef struct Symbol {
     char *type_name;
     int is_ptr;
     int is_func;
+    int is_variadic;
     int used;
     FuncParamList *params;
     SourceLocation loc;
@@ -53,7 +60,7 @@ static void scope_free(SemScope *s) {
 }
 
 static int scope_insert(SemScope *s, const char *name, const char *type_name,
-                        int is_ptr, int is_func, FuncParamList *params,
+                        int is_ptr, int is_func, int is_variadic, FuncParamList *params,
                         SourceLocation loc) {
     for (Symbol *sym = s->buckets[djb2(name)]; sym; sym = sym->next) {
         if (strcmp(sym->name, name) == 0)
@@ -64,6 +71,7 @@ static int scope_insert(SemScope *s, const char *name, const char *type_name,
     sym->type_name = type_name ? strdup(type_name) : NULL;
     sym->is_ptr = is_ptr;
     sym->is_func = is_func;
+    sym->is_variadic = is_variadic;
     sym->used = 0;
     sym->params = params;
     sym->loc = loc;
@@ -426,8 +434,34 @@ static char *analyze_expr(SemanticAnalyzer *a, Expr *expr) {
                 { char *result = strdup(lt); free(lt); free(rt); return result; }
             }
 
+            if (lhs->type == EXPR_INDEX) {
+                char *lt = analyze_expr(a, lhs);
+                if (!lt) { free(rt); return NULL; }
+                if (!types_compatible(lt, rt)) {
+                    sem_error(a, expr->loc, "type mismatch in index assignment: '%s' = '%s'", lt, rt);
+                    free(lt); free(rt); return NULL;
+                }
+                { char *result = strdup(lt); free(lt); free(rt); return result; }
+            }
+
             sem_error(a, expr->loc, "assignment target is not assignable");
             free(rt); return NULL;
+        }
+
+        if (is_assignment_op(op) && op != Equals) {
+            Expr *lhs = expr->data.binary.left;
+            char *lt = analyze_expr(a, lhs);
+            char *rt = analyze_expr(a, expr->data.binary.right);
+            if (!lt || !rt) { free(lt); free(rt); return NULL; }
+            if (!types_compatible(lt, rt)) {
+                sem_error(a, expr->loc, "type mismatch in compound assignment: '%s' and '%s'", lt, rt);
+                free(lt); free(rt); return NULL;
+            }
+            if (!is_numeric_type(lt)) {
+                sem_error(a, expr->loc, "compound assignment requires numeric types, got '%s'", lt);
+                free(lt); free(rt); return NULL;
+            }
+            { char *result = strdup(lt); free(lt); free(rt); return result; }
         }
 
         char *lt = analyze_expr(a, expr->data.binary.left);
@@ -446,28 +480,25 @@ static char *analyze_expr(SemanticAnalyzer *a, Expr *expr) {
             }
             { char *result = strdup(lt); free(lt); free(rt); return result; }
 
-        case EqualsEquals:
+        case EqualsEquals: case BangEquals:
             if (!types_compatible(lt, rt)) {
                 sem_error(a, expr->loc, "comparison between incompatible types '%s' and '%s'", lt, rt);
                 free(lt); free(rt); return NULL;
             }
-            { char *result = strdup("bool"); free(lt); free(rt); return result; }
+            { char *result = strdup("i32"); free(lt); free(rt); return result; }
 
         case Less: case LessEquals: case Greater: case GreaterEquals:
             if (!is_numeric_type(lt) || !is_numeric_type(rt)) {
                 sem_error(a, expr->loc, "relational operator requires numeric types");
                 free(lt); free(rt); return NULL;
             }
-            { char *result = strdup("bool"); free(lt); free(rt); return result; }
+            { char *result = strdup("i32"); free(lt); free(rt); return result; }
 
-        case AmpersandAmpersand:
-            if (!types_equal(lt, "bool") || !types_equal(rt, "bool")) {
-                sem_error(a, expr->loc, "logical AND requires bool operands");
-                free(lt); free(rt); return NULL;
-            }
-            { char *result = strdup("bool"); free(lt); free(rt); return result; }
+        case AmpersandAmpersand: case PipePipe:
+            { char *result = strdup("i32"); free(lt); free(rt); return result; }
 
-        case Ampersand: case Caret:
+        case Ampersand: case Caret: case Pipe:
+        case LeftShift: case RightShift:
             if (!is_numeric_type(lt) || !is_numeric_type(rt)) {
                 sem_error(a, expr->loc, "bitwise operator requires numeric types");
                 free(lt); free(rt); return NULL;
@@ -499,6 +530,12 @@ static char *analyze_expr(SemanticAnalyzer *a, Expr *expr) {
             { char *result = type_deref(ot); free(ot); return result; }
         case Ampersand:
             return ot;
+        case Tilde:
+            if (!is_numeric_type(ot)) {
+                sem_error(a, expr->loc, "bitwise NOT applied to non-numeric type '%s'", ot);
+                free(ot); return NULL;
+            }
+            return ot;
         default:
             return ot;
         }
@@ -528,7 +565,7 @@ static char *analyze_expr(SemanticAnalyzer *a, Expr *expr) {
             int param_count = 0;
             for (FuncParamList *pl = fsym->params; pl; pl = pl->next) param_count++;
 
-            if (argc != param_count) {
+            if (argc != param_count && !fsym->is_variadic) {
                 sem_error(a, expr->loc,
                     "function '%s' expects %d arguments, got %d",
                     fname, param_count, argc);
@@ -651,6 +688,22 @@ static char *analyze_expr(SemanticAnalyzer *a, Expr *expr) {
         free(at);
         return NULL;
     }
+    case EXPR_NEW: {
+        for (ExprList *dl = expr->data.new_expr.dims; dl; dl = dl->next) {
+            char *dt = analyze_expr(a, dl->expr);
+            free(dt);
+        }
+        char *base = strdup(expr->data.new_expr.type_name);
+        char *result = malloc(strlen(base) + 2);
+        sprintf(result, "%s*", base);
+        free(base);
+        return result;
+    }
+    case EXPR_DELETE: {
+        char *et = analyze_expr(a, expr->data.delete_expr.operand);
+        free(et);
+        return NULL;
+    }
     }
 
     return NULL;
@@ -721,7 +774,7 @@ static void analyze_stmt(SemanticAnalyzer *a, Stmt *stmt) {
             free(it);
         }
 
-        scope_insert(a->scope, name, ty, stmt->data.var_decl.is_ptr, 0, NULL, stmt->loc);
+        scope_insert(a->scope, name, ty, stmt->data.var_decl.is_ptr, 0, 0, NULL, stmt->loc);
         break;
     }
 
@@ -737,6 +790,9 @@ static void analyze_stmt(SemanticAnalyzer *a, Stmt *stmt) {
         for (ElifClause *ec = stmt->data.if_stmt.elifs; ec; ec = ec->next) {
             if (ec->condition) {
                 char *ct = analyze_expr(a, ec->condition);
+                if (ct && !types_equal(ct, "bool") && !is_numeric_type(ct)) {
+                    sem_error(a, ec->condition->loc, "elif condition must be bool or numeric, got '%s'", ct);
+                }
                 free(ct);
             }
             analyze_block(a, ec->body);
@@ -830,7 +886,7 @@ static void analyze_func_decl(SemanticAnalyzer *a, Decl *decl) {
         return;
     }
 
-    scope_insert(a->scope, f->name, f->return_type, 0, 1, f->params, decl->loc);
+    scope_insert(a->scope, f->name, f->return_type, 0, 1, f->is_variadic, f->params, decl->loc);
 
     if (f->body) {
         SemScope *func_scope = scope_new(a->scope);
@@ -848,7 +904,7 @@ static void analyze_func_decl(SemanticAnalyzer *a, Decl *decl) {
                           pl->param.name);
             } else {
                 scope_insert(a->scope, pl->param.name, pl->param.type_name,
-                             pl->param.is_ptr, 0, NULL, decl->loc);
+                             pl->param.is_ptr, 0, 0, NULL, decl->loc);
                 Symbol *psym = scope_lookup_current(a->scope, pl->param.name);
                 if (psym) psym->used = 1;
             }
@@ -886,7 +942,7 @@ static void analyze_struct_decl(SemanticAnalyzer *a, Decl *decl) {
         }
     }
 
-    scope_insert(a->scope, s->name, s->name, 0, 0, NULL, decl->loc);
+    scope_insert(a->scope, s->name, s->name, 0, 0, 0, NULL, decl->loc);
 
     registry_add_struct(a->types, s->name, s->fields,
                         s->generic_params, s->methods);
@@ -899,7 +955,7 @@ static void analyze_struct_decl(SemanticAnalyzer *a, Decl *decl) {
             FuncDecl *m = &ml->decl->data.func;
             char full_name[256];
             snprintf(full_name, sizeof(full_name), "%s.%s", s->name, m->name);
-            scope_insert(a->scope, full_name, m->return_type, 0, 1,
+            scope_insert(a->scope, full_name, m->return_type, 0, 1, 0,
                          m->params, ml->decl->loc);
         }
     }
@@ -921,7 +977,7 @@ static void analyze_interface_decl(SemanticAnalyzer *a, Decl *decl) {
         return;
     }
 
-    scope_insert(a->scope, iface->name, iface->name, 0, 0, NULL, decl->loc);
+    scope_insert(a->scope, iface->name, iface->name, 0, 0, 0, NULL, decl->loc);
 
     registry_add_interface(a->types, iface->name, iface->methods,
                            iface->generic_params);

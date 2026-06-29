@@ -1,0 +1,7 @@
+{
+  "name": "testproject",
+  "version": "0.1.0",
+  "compiler": "abyssc",
+  "source": ["."],
+  "include": ["."]
+}

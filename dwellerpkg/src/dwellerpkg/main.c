@@ -13,7 +13,8 @@ static void usage(void) {
         "\n"
         "usage:\n"
         "  dwellerpkg init <name>                  create package skeleton\n"
-        "  dwellerpkg build [--static|--shared]    build library from source\n"
+        "  dwellerpkg build [--static|--shared|--executable]  build library or executable\n"
+        "    --link <name>  link against an installed package (repeatable)\n"
         "  dwellerpkg install <file> <name> <ver>  install a library file\n"
         "  dwellerpkg list                         list installed packages\n"
         "  dwellerpkg link <name>                  print linker flags\n"
@@ -57,13 +58,18 @@ static void cmd_init(const char *name) {
 static void cmd_build(int argc, char **argv) {
     int make_static = 1;
     int make_shared = 0;
+    int make_executable = 0;
     const char *output = NULL;
     const char *name = NULL;
     const char *version = NULL;
+    const char *link_libs[64];
+    int link_lib_count = 0;
 
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--static") == 0) make_static = 1;
         else if (strcmp(argv[i], "--shared") == 0) { make_shared = 1; make_static = 0; }
+        else if (strcmp(argv[i], "--executable") == 0) { make_executable = 1; make_static = 0; }
+        else if (strcmp(argv[i], "--link") == 0 && i + 1 < argc) link_libs[link_lib_count++] = argv[++i];
         else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) output = argv[++i];
         else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) name = argv[++i];
         else if (strcmp(argv[i], "-v") == 0 && i + 1 < argc) version = argv[++i];
@@ -149,20 +155,27 @@ static void cmd_build(int argc, char **argv) {
     char out_path[512];
     if (output) {
         snprintf(out_path, sizeof(out_path), "%s", output);
+    } else if (make_executable) {
+        snprintf(out_path, sizeof(out_path), "%s", name ? name : "a.out");
     } else if (make_shared) {
         snprintf(out_path, sizeof(out_path), "lib%s.abyss_so", name);
     } else {
         snprintf(out_path, sizeof(out_path), "lib%s.abyss_a", name);
     }
 
-    if (make_static) {
+    if (make_executable) {
+        fprintf(stderr, "building executable %s from %d source files...\n", out_path, source_count);
+        if (pkg_build_executable(sources, source_count, out_path, link_libs, link_lib_count))
+            fprintf(stderr, "built %s\n", out_path);
+        else
+            fprintf(stderr, "build failed\n");
+    } else if (make_static) {
         fprintf(stderr, "building static library %s from %d source files...\n", out_path, source_count);
         if (pkg_build_static(sources, source_count, out_path, name, version))
             fprintf(stderr, "built %s\n", out_path);
         else
             fprintf(stderr, "build failed\n");
-    }
-    if (make_shared) {
+    } else if (make_shared) {
         fprintf(stderr, "building shared library %s from %d source files...\n", out_path, source_count);
         if (pkg_build_shared(sources, source_count, out_path, name, version))
             fprintf(stderr, "built %s\n", out_path);
@@ -244,7 +257,9 @@ static void cmd_metadata(int argc, char **argv) {
                     meta.funcs[i].params[j].type_name,
                     meta.funcs[i].params[j].name);
             }
-            fprintf(stderr, ")%s\n", meta.funcs[i].is_extern ? " extern" : "");
+            fprintf(stderr, ")%s%s\n",
+                    meta.funcs[i].is_variadic ? " variadic" : "",
+                    meta.funcs[i].is_extern ? " extern" : "");
         }
         pkg_metadata_free(&meta);
     }

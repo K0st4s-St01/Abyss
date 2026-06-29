@@ -89,7 +89,8 @@ static char *parse_type_name(Parser *p) {
         t->type == Void) {
         char *name = strdup(t->text);
         advance(p);
-        if (check(p, Generic)) {
+        if (check(p, Generic) || (t->type == Identifier && check(p, Less))) {
+            if (check(p, Less)) advance(p);
             GenericParamList *args = parse_generic_params(p);
             GenericParamList *cur = args;
             while (cur) {
@@ -122,7 +123,7 @@ static char *parse_type_name(Parser *p) {
 static Expr *parse_expr(Parser *p);
 static Stmt *parse_statement(Parser *p);
 static Stmt *parse_block(Parser *p);
-static FuncParamList *parse_param_list(Parser *p);
+static FuncParamList *parse_param_list(Parser *p, int *is_variadic);
 
 /* ── Expression parser (precedence climbing) ────────────────── */
 
@@ -131,21 +132,32 @@ static int get_binary_precedence(TokenType op) {
         case Equals:                          return 1;
         case PlusEquals: case MinusEquals:
         case StarEquals: case SlashEquals:
-        case AmpersandEquals:                  return 1;
-        case AmpersandAmpersand:               return 4;
-        case EqualsEquals:                     return 10;
+        case PercentEquals:
+        case AmpersandEquals:
+        case PipeEquals:
+        case CaretEquals:                     return 1;
+        case PipePipe:                        return 2;
+        case Pipe:                            return 3;
+        case Caret:                           return 4;
+        case AmpersandAmpersand:              return 5;
+        case Ampersand:                       return 6;
+        case BangEquals: case EqualsEquals:   return 10;
         case Less: case LessEquals:
-        case Greater: case GreaterEquals:      return 11;
-        case Plus: case Minus:                 return 13;
-        case Star: case Slash: case Percent:   return 14;
-        case Dot: case Arrow:                  return 15;
-        default:                               return -1;
+        case Greater: case GreaterEquals:     return 11;
+        case LeftShift: case RightShift:      return 12;
+        case Plus: case Minus:                return 13;
+        case Star: case Slash: case Percent:  return 14;
+        case Tilde:                           return 15;
+        case Dot: case Arrow:                 return 16;
+        case LBracket: case LParen:            return 17;
+        default:                              return -1;
     }
 }
 
 static bool is_assignment_op(TokenType op) {
     return op == Equals || op == PlusEquals || op == MinusEquals ||
-           op == StarEquals || op == SlashEquals || op == AmpersandEquals;
+           op == StarEquals || op == SlashEquals || op == AmpersandEquals ||
+           op == PercentEquals || op == PipeEquals || op == CaretEquals;
 }
 
 static Expr *parse_primary(Parser *p) {
@@ -194,13 +206,42 @@ static Expr *parse_primary(Parser *p) {
         return e;
     }
 
-    if (t->type == Minus || t->type == Star || t->type == Ampersand) {
+    if (t->type == Minus || t->type == Star || t->type == Ampersand || t->type == Bang || t->type == Tilde) {
         TokenType op = t->type;
         advance(p);
         Expr *operand = parse_primary(p);
         if (op == Star) return expr_new_deref(operand, t->loc);
         if (op == Ampersand) return expr_new_addrof(operand, t->loc);
         return expr_new_unary(op, operand, t->loc);
+    }
+
+    if (t->type == New) {
+        advance(p);
+        char *type_name = parse_type_name(p);
+        if (!type_name) return NULL;
+        
+        ExprList *dims = NULL;
+        while (check(p, LBracket)) {
+            advance(p);
+            Expr *dim = parse_expr(p);
+            expect(p, RBracket);
+            expr_list_append(&dims, dim);
+        }
+        Expr *e = expr_new_new(type_name, dims, t->loc);
+        free(type_name);
+        return e;
+    }
+
+    if (t->type == Delete) {
+        advance(p);
+        int dim_count = 0;
+        while (check(p, LBracket)) {
+            advance(p);
+            expect(p, RBracket);
+            dim_count++;
+        }
+        Expr *operand = parse_primary(p);
+        return expr_new_delete(operand, dim_count, t->loc);
     }
 
     parser_error(p, "unexpected token in expression");
@@ -439,7 +480,7 @@ static Stmt *parse_statement(Parser *p) {
 
     if (is_type_start(t) && p->pos + 1 < p->tokens->size) {
         Token *next = p->tokens->toks[p->pos + 1];
-        if (next && (next->type == Identifier || next->type == Generic)) {
+        if (next && (next->type == Identifier || next->type == Generic || next->type == Star)) {
             return parse_var_decl(p);
         }
     }
@@ -451,11 +492,16 @@ static Stmt *parse_statement(Parser *p) {
 
 /* ── Declaration parser ─────────────────────────────────────── */
 
-static FuncParamList *parse_param_list(Parser *p) {
+static FuncParamList *parse_param_list(Parser *p, int *is_variadic) {
     FuncParamList *params = NULL;
     if (check(p, RParen)) return params;
 
     do {
+        if (check(p, Ellipsis)) {
+            advance(p);
+            *is_variadic = 1;
+            break;
+        }
         if (check(p, Self)) {
             size_t saved = p->pos;
             advance(p);
@@ -490,12 +536,18 @@ static FuncParamList *parse_param_list(Parser *p) {
     return params;
 }
 
-static Decl *parse_func_decl(Parser *p, char *ret_type, char *name, GenericParamList *generic_params, SourceLocation loc) {
+static Decl *parse_func_decl(Parser *p, char *ret_type, char *name, GenericParamList *generic_params, int is_extern, SourceLocation loc) {
     expect(p, LParen);
-    FuncParamList *params = parse_param_list(p);
+    int is_variadic = 0;
+    FuncParamList *params = parse_param_list(p, &is_variadic);
     expect(p, RParen);
-    Stmt *body = parse_block(p);
-    return decl_new_func(ret_type, name, params, generic_params, body, NULL, loc);
+    Stmt *body = NULL;
+    if (!is_extern) {
+        body = parse_block(p);
+    } else {
+        expect(p, Semicolon);
+    }
+    return decl_new_func(ret_type, name, params, generic_params, body, NULL, is_extern, is_variadic, loc);
 }
 
 static StructFieldList *parse_struct_fields(Parser *p) {
@@ -541,7 +593,7 @@ static Decl *parse_struct_decl(Parser *p) {
             char *ty = parse_type_name(p);
             Token *mname = expect(p, Identifier);
             if (check(p, LParen)) {
-                Decl *method = parse_func_decl(p, ty, mname->text, NULL, mt->loc);
+                Decl *method = parse_func_decl(p, ty, mname->text, NULL, 0, mt->loc);
                 decl_list_append(&methods, method);
             }
             free(ty);
@@ -565,7 +617,7 @@ static Decl *parse_interface_decl(Parser *p) {
         char *ret = parse_type_name(p);
         Token *mname = expect(p, Identifier);
         expect(p, LParen);
-        FuncParamList *params = parse_param_list(p);
+        FuncParamList *params = parse_param_list(p, NULL);
         expect(p, RParen);
         expect(p, Semicolon);
         InterfaceMethod m = interface_method_new(ret, mname->text, params);
@@ -591,12 +643,19 @@ static Decl *parse_top_level(Parser *p) {
     if (t->type == Struct)  return parse_struct_decl(p);
     if (t->type == Interface) return parse_interface_decl(p);
 
+    int is_extern = 0;
+    if (t->type == Extern) {
+        is_extern = 1;
+        advance(p);
+        t = peek(p);
+    }
+
     if (is_type_start(t)) {
         char *ty = parse_type_name(p);
         Token *name = expect(p, Identifier);
         GenericParamList *generic_params = parse_generic_params(p);
         if (check(p, LParen)) {
-            Decl *d = parse_func_decl(p, ty, name->text, generic_params, t->loc);
+            Decl *d = parse_func_decl(p, ty, name->text, generic_params, is_extern, t->loc);
             free(ty);
             return d;
         }

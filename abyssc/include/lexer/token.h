@@ -41,6 +41,9 @@ typedef enum{
   ,Break
   ,Continue
   ,Self
+  ,Extern
+  ,New
+  ,Delete
   //operator
   ,Generic       // <>
   ,Arrow
@@ -67,12 +70,20 @@ typedef enum{
   ,RightShift
   ,Equals
   ,EqualsEquals
+  ,BangEquals
+  ,Bang
+  ,PipePipe
+  ,Pipe
+  ,PipeEquals
+  ,PercentEquals
+  ,CaretEquals
+  ,Tilde
   //punctuation
   ,Comma
   ,Semicolon
   ,Dot
+  ,Ellipsis
   ,Scope
-  ,Tilde
   ,At
   ,LParen
   ,RParen

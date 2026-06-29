@@ -59,7 +59,10 @@ void lexer_skip_whitespace_and_comments(Lexer *lexer){
         	lexer_advance(lexer);
         	c = lexer_peek(lexer,0);
         }
-        c = lexer_peek(lexer,0);
+        while(c == ' ' || c == '\t' || c == '\r' || c == '\n'){
+            lexer_advance(lexer);
+            c = lexer_peek(lexer,0);
+        }
     }
 }
 SourceLocation lexer_current_location(Lexer *lexer){
@@ -90,14 +93,18 @@ Token *lexer_next_token(Lexer *lexer){
       	case '*':      	
        	case '/':
        	case '%':
-       	case '&':
+        case '&':
         case '=':
+        case '!':
+        case '|':
+        case '^':
+        case '~':
         	{ Token *t = lexer_make_operator(lexer); lexer->prev_token_type = t->type; return t; }
         case '<':
         	case '>':
         	{
         	    TokenType prev = lexer->prev_token_type;
-        	    bool prev_is_type = (prev == Identifier || prev == Generic ||
+        	    bool prev_is_type = (prev == Generic ||
         	                        token_is_primitive_type_raw(prev) || prev == Void);
         	    bool is_generic_open  = (c == '<' && prev_is_type);
         	    bool is_generic_close = (c == '>' && prev_is_type);
@@ -114,8 +121,14 @@ Token *lexer_next_token(Lexer *lexer){
         case ',':
         case ';':
         case '.':
+            if (c == '.' && lexer_peek(lexer, 1) == '.' && lexer_peek(lexer, 2) == '.') {
+                lexer_advance(lexer); lexer_advance(lexer); lexer_advance(lexer);
+                Token *t = token_new(lexer_current_location(lexer), "...", Ellipsis);
+                lexer->prev_token_type = Ellipsis;
+                return t;
+            }
+            { Token *t = lexer_make_punctuation(lexer); lexer->prev_token_type = t->type; return t; }
         case ':':
-        case '~':
         case '@':
         case '(':
         case ')':
@@ -135,7 +148,7 @@ Token *lexer_next_token(Lexer *lexer){
  	
 }
 
-static char* keywords[15] = {
+static char* keywords[18] = {
   "if"
   ,"else"
   ,"elif"
@@ -151,6 +164,9 @@ static char* keywords[15] = {
   ,"break"
   ,"continue"
   ,"self"
+  ,"extern"
+  ,"new"
+  ,"delete"
 };
 
 static char* primitives[13] ={
@@ -181,8 +197,8 @@ Token *lexer_make_identifier_or_keyword(Lexer *lexer){
     }
     char* current_word = string_builder_to_string(sb);
     string_builder_free(sb);
-  	for(int i =0;i<15;i++){
-   		if(i < 15 && strcmp(current_word,keywords[i]) == 0){
+  	for(int i =0;i<18;i++){
+   		if(i < 18 && strcmp(current_word,keywords[i]) == 0){
      		Token *tok = token_new(lexer_current_location(lexer),current_word,i + 20);
   			free(current_word);
   			return tok;
@@ -223,7 +239,20 @@ static Token* lex_str_literal(Lexer *lexer){
   	string_builder_add(sb,c);
  	while(lexer_peek(lexer,0) != '"' && lexer_peek(lexer,0) != '\0'){
   		c = lexer_advance(lexer);
-    	string_builder_add(sb,c);
+        if (c == '\\' && lexer_peek(lexer, 0) != '\0') {
+            char next = lexer_advance(lexer);
+            switch (next) {
+                case 'n':  string_builder_add(sb, '\n'); break;
+                case 't':  string_builder_add(sb, '\t'); break;
+                case 'r':  string_builder_add(sb, '\r'); break;
+                case '\\': string_builder_add(sb, '\\'); break;
+                case '"':  string_builder_add(sb, '"'); break;
+                case '0':  string_builder_add(sb, '\0'); break;
+                default:   string_builder_add(sb, '\\'); string_builder_add(sb, next); break;
+            }
+        } else {
+    	    string_builder_add(sb,c);
+        }
    	}
     if(lexer_peek(lexer,0) == '"'){
         c =lexer_advance(lexer);
@@ -282,7 +311,6 @@ Token *lexer_make_punctuation(Lexer *lexer){
       		}else{
 	       		return token_new(lexer_current_location(lexer),"<INVALID>",Invalid);
         	}
-		case '~':return token_new(lexer_current_location(lexer),"~",Tilde);
 		case '@':return token_new(lexer_current_location(lexer),"@",At);
 		case '(':return token_new(lexer_current_location(lexer),"(",LParen);
 		case ')':return token_new(lexer_current_location(lexer),")",RParen);
@@ -324,6 +352,8 @@ Token *lexer_make_operator(Lexer *lexer){
          		return token_new(loc,"/=",SlashEquals);
            return token_new(loc,"/",Slash);
         case '%':
+        	if(lexer_match(lexer,'='))
+         		return token_new(loc,"%=",PercentEquals);
         	return token_new(loc,"%",Percent);
         case '&':
         	if(lexer_match(lexer,'='))
@@ -331,6 +361,18 @@ Token *lexer_make_operator(Lexer *lexer){
            	if(lexer_match(lexer,'&'))
             	return token_new(loc,"&&",AmpersandAmpersand);
         	return token_new(loc,"&",Ampersand); 
+        case '|':
+        	if(lexer_match(lexer,'='))
+         		return token_new(loc,"|=",PipeEquals);
+           	if(lexer_match(lexer,'|'))
+            	return token_new(loc,"||",PipePipe);
+        	return token_new(loc,"|",Pipe); 
+        case '^':
+        	if(lexer_match(lexer,'='))
+         		return token_new(loc,"^=",CaretEquals);
+        	return token_new(loc,"^",Caret); 
+        case '~':
+        	return token_new(loc,"~",Tilde);
         case '<':
         	if(lexer_match(lexer,'<'))
          		return token_new(loc,"<<",LeftShift);
@@ -347,6 +389,10 @@ Token *lexer_make_operator(Lexer *lexer){
         	if(lexer_match(lexer,'='))
          		return token_new(loc,"==",EqualsEquals);
            return token_new(loc,"=",Equals);
+        case '!':
+        	if(lexer_match(lexer,'='))
+         		return token_new(loc,"!=",BangEquals);
+           return token_new(loc,"!",Bang);
         default:
            return token_new(loc,"<INVALID>",Invalid);
         

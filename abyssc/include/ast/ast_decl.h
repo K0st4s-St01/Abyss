@@ -49,6 +49,8 @@ typedef struct {
     GenericParamList *generic_params;
     Stmt *body;
     DecoratorList *decorators;
+    int is_extern;
+    int is_variadic;
 } FuncDecl;
 
 typedef struct {
@@ -150,7 +152,7 @@ GenericParamList *generic_param_list_new(void);
 void generic_param_list_append(GenericParamList **list, GenericParam param);
 void generic_param_list_free(GenericParamList *list);
 
-Decl *decl_new_func(char *return_type, char *name, FuncParamList *params, GenericParamList *generic_params, Stmt *body, DecoratorList *decorators, SourceLocation loc);
+Decl *decl_new_func(char *return_type, char *name, FuncParamList *params, GenericParamList *generic_params, Stmt *body, DecoratorList *decorators, int is_extern, int is_variadic, SourceLocation loc);
 Decl *decl_new_struct(char *name, StructFieldList *fields, GenericParamList *generic_params, DeclList *methods, DecoratorList *decorators, SourceLocation loc);
 Decl *decl_new_interface(char *name, InterfaceMethodList *methods, GenericParamList *generic_params, SourceLocation loc);
 Decl *decl_new_import(char *module_name, SourceLocation loc);
@@ -162,6 +164,7 @@ void decl_list_free(DeclList *list);
 
 Program *program_new(char *filename);
 void program_add_decl(Program *program, Decl *decl);
+void program_insert_decl_after(Program *program, Decl *after, Decl *decl);
 void program_free(Program *program);
 
 #endif

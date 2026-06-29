@@ -9,6 +9,7 @@
 #include "../include/ast/ast.h"
 #include "../include/semantic/semantic.h"
 #include "../include/codegen/codegen.h"
+#include "../include/import_resolver.h"
 
 
 char* read_file(char* filename){
@@ -103,6 +104,15 @@ static void print_expr(Expr *e, int depth) {
         case EXPR_ASSIGN:
             print_indent(depth); printf("Assign(%s)\n", e->data.assign.name);
             print_expr(e->data.assign.value, depth + 1);
+            break;
+        case EXPR_NEW:
+            print_indent(depth); printf("New(%s)\n", e->data.new_expr.type_name);
+            for (ExprList *dl = e->data.new_expr.dims; dl; dl = dl->next)
+                print_expr(dl->expr, depth + 1);
+            break;
+        case EXPR_DELETE:
+            print_indent(depth); printf("Delete[%d]\n", e->data.delete_expr.dim_count);
+            print_expr(e->data.delete_expr.operand, depth + 1);
             break;
     }
 }
@@ -239,6 +249,11 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    /* Collected library paths from imports */
+    char **lib_paths = NULL;
+    int lib_count = 0;
+    int lib_cap = 0;
+
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-emit-llvm") == 0) { emit_llvm = 1; continue; }
         if (strcmp(argv[i], "-c") == 0)          { compile = 1;    continue; }
@@ -265,6 +280,35 @@ int main(int argc, char **argv) {
         Program *prog = parse_program(parser, argv[i]);
 
         if (!parser->had_error) {
+            /* Resolve imports: inject declarations from package metadata */
+            {
+                int import_count = 0;
+                for (DeclList *dl = prog->decls; dl; dl = dl->next)
+                    if (dl->decl && dl->decl->type == DECL_IMPORT)
+                        import_count++;
+                if (import_count > 0) {
+                    Decl **imports = malloc(sizeof(Decl*) * import_count);
+                    int idx = 0;
+                    for (DeclList *dl = prog->decls; dl; dl = dl->next)
+                        if (dl->decl && dl->decl->type == DECL_IMPORT)
+                            imports[idx++] = dl->decl;
+                    for (int j = 0; j < import_count; j++) {
+                        char *lib_path = NULL;
+                        if (ir_inject_import(imports[j]->data.import.module_name, prog, imports[j], &lib_path)) {
+                            fprintf(stderr, "imported '%s' from %s\n",
+                                    imports[j]->data.import.module_name, lib_path);
+                            /* Track library path for linking */
+                            if (lib_count >= lib_cap) {
+                                lib_cap = lib_cap ? lib_cap * 2 : 8;
+                                lib_paths = realloc(lib_paths, sizeof(char*) * lib_cap);
+                            }
+                            lib_paths[lib_count++] = lib_path;
+                        }
+                    }
+                    free(imports);
+                }
+            }
+
             SemanticAnalyzer *analyzer = semantic_analyzer_new();
             bool ok = semantic_analyze(analyzer, prog);
             if (!ok) {
@@ -287,10 +331,18 @@ int main(int argc, char **argv) {
                         if (output_name) {
                             snprintf(oname, sizeof(oname), "%s", output_name);
                         } else {
-                            snprintf(oname, sizeof(oname), "%s.o", argv[i]);
+                            /* Strip .as extension if present, keep directory */
+                            size_t len = strlen(argv[i]);
+                            if (len > 3 && strcmp(argv[i] + len - 3, ".as") == 0) {
+                                snprintf(oname, sizeof(oname), "%.*s", (int)(len - 3), argv[i]);
+                            } else {
+                                snprintf(oname, sizeof(oname), "%s", argv[i]);
+                            }
                         }
-                        char cmd[2048];
-                        snprintf(cmd, sizeof(cmd), "clang \"%s\" -c -o \"%s\"", llname, oname);
+
+                        /* Compile LLVM IR to an object file. */
+                        char cmd[4096];
+                        snprintf(cmd, sizeof(cmd), "clang -c \"%s\" -o \"%s\"", llname, oname);
                         fprintf(stderr, "%s\n", cmd);
                         int ret = system(cmd);
                         if (ret != 0)
@@ -311,6 +363,9 @@ int main(int argc, char **argv) {
         free(lexer->source_code);
         free(lexer);
     }
+
+    for (int i = 0; i < lib_count; i++) free(lib_paths[i]);
+    free(lib_paths);
 
     return 0;
 }

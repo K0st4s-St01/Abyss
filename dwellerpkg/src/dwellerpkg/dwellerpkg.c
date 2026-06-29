@@ -238,6 +238,8 @@ char *pkg_metadata_to_json(const PkgMetadata *meta) {
         json_kv_str(&b, "return_type", f->return_type);
         json_raw(&b, ",", 1);
         json_kv_int(&b, "is_extern", f->is_extern ? 1 : 0);
+        json_raw(&b, ",", 1);
+        json_kv_int(&b, "is_variadic", f->is_variadic ? 1 : 0);
 
         json_raw(&b, ",\"params\":[", 11);
         for (int j = 0; j < f->param_count; j++) {
@@ -449,6 +451,7 @@ bool pkg_metadata_from_json(const char *json, size_t len, PkgMetadata *out) {
                 out->funcs[i].name = json_get_string(&item, "name");
                 out->funcs[i].return_type = json_get_string(&item, "return_type");
                 out->funcs[i].is_extern = json_get_int(&item, "is_extern") != 0;
+                out->funcs[i].is_variadic = json_get_int(&item, "is_variadic") != 0;
 
                 JP pi;
                 pi = item;
@@ -693,6 +696,7 @@ bool pkg_build_static(const char **source_files, int source_count,
                     pf->name = strdup(fd->name);
                     pf->return_type = strdup(fd->return_type);
                     pf->is_extern = (fd->body == NULL);
+                    pf->is_variadic = fd->is_variadic;
 
                     int pc = 0;
                     for (FuncParamList *pl = fd->params; pl; pl = pl->next) pc++;
@@ -838,6 +842,7 @@ bool pkg_build_shared(const char **source_files, int source_count,
                     pf->name = strdup(fd->name);
                     pf->return_type = strdup(fd->return_type);
                     pf->is_extern = (fd->body == NULL);
+                    pf->is_variadic = fd->is_variadic;
 
                     int pc = 0;
                     for (FuncParamList *pl = fd->params; pl; pl = pl->next) pc++;
@@ -868,6 +873,108 @@ bool pkg_build_shared(const char **source_files, int source_count,
         }
 
         pkg_metadata_free(&meta);
+    }
+
+    for (int i = 0; i < obj_count; i++) {
+        remove(obj_files[i]);
+        free(obj_files[i]);
+    }
+    rmdir(obj_dir);
+
+    return ok;
+}
+
+/* ── Executable build ────────────────────────────────────────── */
+
+bool pkg_build_executable(const char **source_files, int source_count,
+                          const char *output_path,
+                          const char **link_libs, int link_lib_count) {
+    char obj_dir[512];
+    snprintf(obj_dir, sizeof(obj_dir), "/tmp/abyssc_pkg_%d", (int)getpid());
+    ensure_path(obj_dir);
+
+    char *obj_files[256];
+    int obj_count = 0;
+    bool ok = true;
+
+    for (int i = 0; i < source_count && ok; i++) {
+        char obj_path[1024];
+        char *base = strdup(source_files[i]);
+        char *dot = strrchr(base, '.');
+        if (dot) *dot = '\0';
+        char *slash = strrchr(base, '/');
+        const char *fname = slash ? slash + 1 : base;
+        snprintf(obj_path, sizeof(obj_path), "%s/%s.o", obj_dir, fname);
+
+        char cmd[2048];
+        snprintf(cmd, sizeof(cmd),
+            "abyssc -c -o \"%s\" \"%s\"", obj_path, source_files[i]);
+        if (system(cmd) != 0) {
+            fprintf(stderr, "dwellerpkg: failed to compile %s\n", source_files[i]);
+            ok = false;
+        } else {
+            obj_files[obj_count++] = strdup(obj_path);
+        }
+        free(base);
+    }
+
+    if (ok && obj_count > 0) {
+        /* Resolve library archives from installed packages.
+           Extract raw library data from metadata-wrapped files. */
+        char *lib_paths[256];
+        int lib_count = 0;
+
+        for (int i = 0; i < link_lib_count; i++) {
+            char *pkg_path = pkg_find_library(link_libs[i]);
+            if (!pkg_path) {
+                fprintf(stderr, "dwellerpkg: library '%s' not found\n", link_libs[i]);
+                ok = false;
+                continue;
+            }
+
+            /* Extract raw library content from the dwellerpkg wrapper */
+            char *json = NULL;
+            size_t json_len = 0;
+            void *lib_data = NULL;
+            size_t lib_size = 0;
+            if (pkg_read_library(pkg_path, &json, &json_len, &lib_data, &lib_size)) {
+                /* Write raw .a to temp file */
+                char raw_path[1024];
+                snprintf(raw_path, sizeof(raw_path), "%s/%s_raw.a", obj_dir, link_libs[i]);
+                FILE *rf = fopen(raw_path, "wb");
+                if (rf && lib_data && lib_size > 0) {
+                    fwrite(lib_data, 1, lib_size, rf);
+                    fclose(rf);
+                    lib_paths[lib_count++] = strdup(raw_path);
+                } else {
+                    fprintf(stderr, "dwellerpkg: failed to extract library '%s'\n", link_libs[i]);
+                    ok = false;
+                }
+                free(json);
+                free(lib_data);
+            } else {
+                fprintf(stderr, "dwellerpkg: cannot read library '%s'\n", link_libs[i]);
+                ok = false;
+            }
+            free(pkg_path);
+        }
+
+        if (ok) {
+            char link_cmd[8192];
+            int n = snprintf(link_cmd, sizeof(link_cmd), "clang -o \"%s\"", output_path);
+            for (int i = 0; i < obj_count; i++)
+                n += snprintf(link_cmd + n, sizeof(link_cmd) - n, " \"%s\"", obj_files[i]);
+            for (int i = 0; i < lib_count; i++)
+                n += snprintf(link_cmd + n, sizeof(link_cmd) - n, " \"%s\"", lib_paths[i]);
+
+            if (system(link_cmd) != 0) {
+                fprintf(stderr, "dwellerpkg: link failed\n");
+                ok = false;
+            }
+        }
+
+        for (int i = 0; i < lib_count; i++)
+            free(lib_paths[i]);
     }
 
     for (int i = 0; i < obj_count; i++) {
@@ -1089,7 +1196,7 @@ bool pkg_inject_import(const char *package_name, Program *program) {
             strdup(pf->return_type),
             strdup(pf->name),
             params, gparams,
-            NULL, NULL, loc);
+            NULL, NULL, pf->is_extern, pf->is_variadic, loc);
         program_add_decl(program, decl);
     }
 
