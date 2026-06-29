@@ -2,6 +2,8 @@
   "name": "dwellerpkg",
   "version": "0.1.0",
   "compiler": "gcc",
-  "source": ["src"],
-  "include": ["include"]
+  "source": ["src/dwellerpkg", "../abyssc/src/lexer", "../abyssc/src/parser", "../abyssc/src/ast", "../abyssc/src/utils"],
+  "include": ["include", "../abyssc/include"],
+  "cflags": ["-w"],
+  "libs": []
 }

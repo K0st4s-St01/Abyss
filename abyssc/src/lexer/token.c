@@ -8,10 +8,18 @@ static bool between(size_t item,size_t starting_bound,size_t end_bound){
 
 Token *token_new(SourceLocation loc, char *text, TokenType type) {
   Token *token = (Token *)malloc(sizeof(Token));
-  token->loc = token->loc;
-  strcpy(token->text, text);
+  if (!token) return NULL;
+  token->loc = loc;
+  token->text = strdup(text);
   token->type = type;
   return token;
+}
+
+void token_free(Token *token) {
+  if (token) {
+    free(token->text);
+    free(token);
+  }
 }
 
 bool token_is_primitive_type(Token *token){
@@ -22,7 +30,7 @@ bool token_is_literal(Token *token){
 }
 bool token_is_keyword(Token *token){
   return token_is_primitive_type(token) ||
-          between(token->type,If,Import);
+          between(token->type,If,Self);
 }
 bool token_is_operator(Token *token){
   return between(token->type,Arrow,EqualsEquals);

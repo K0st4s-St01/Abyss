@@ -22,6 +22,8 @@ typedef enum{
   ,U64
   ,F32
   ,F64
+  ,Char
+  ,Str
   ,Void
   ,Bool
   ,If
@@ -35,31 +37,43 @@ typedef enum{
   ,Struct
   ,Interface
   ,Import
+  ,Return
+  ,Break
+  ,Continue
+  ,Self
   //operator
+  ,Generic       // <>
   ,Arrow
   ,Plus
   ,PlusPlus
   ,PlusEquals
   ,Minus
   ,MinusMinus
+  ,MinusEquals
   ,Star
   ,StarEquals
   ,Slash
   ,SlashEquals
   ,Percent
   ,Ampersand
+  ,AmpersandEquals
   ,AmpersandAmpersand
+  ,Caret
   ,Less
   ,LessEquals
+  ,LeftShift
   ,Greater
   ,GreaterEquals
+  ,RightShift
   ,Equals
   ,EqualsEquals
   //punctuation
   ,Comma
   ,Semicolon
+  ,Dot
   ,Scope
   ,Tilde
+  ,At
   ,LParen
   ,RParen
   ,LBrace
@@ -77,6 +91,7 @@ typedef struct{
 }Token;
 
 Token* token_new(SourceLocation loc,char* text,TokenType type);
+void token_free(Token *token);
 bool token_is_primitive_type(Token *token);
 bool token_is_literal(Token *token);
 bool token_is_keyword(Token *token);
