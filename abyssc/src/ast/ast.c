@@ -666,6 +666,24 @@ Decl *decl_new_struct(char *name, StructFieldList *fields,
     return d;
 }
 
+Decl *decl_new_type_alias(char *name, char *target_type, SourceLocation loc) {
+    Decl *d = malloc(sizeof(Decl));
+    d->type = DECL_TYPE_ALIAS;
+    d->loc = loc;
+    d->data.type_alias.name = str_dup(name);
+    d->data.type_alias.target_type = str_dup(target_type);
+    return d;
+}
+
+Decl *decl_new_enum(char *name, EnumVariantList *variants, SourceLocation loc) {
+    Decl *d = malloc(sizeof(Decl));
+    d->type = DECL_ENUM;
+    d->loc = loc;
+    d->data.enum_decl.name = str_dup(name);
+    d->data.enum_decl.variants = variants;
+    return d;
+}
+
 Decl *decl_new_interface(char *name, InterfaceMethodList *methods,
                          GenericParamList *generic_params, SourceLocation loc) {
     Decl *d = malloc(sizeof(Decl));
@@ -703,6 +721,14 @@ void decl_free(Decl *decl) {
             decl_list_free(decl->data.struct_decl.methods);
             decorator_list_free(decl->data.struct_decl.decorators);
             break;
+        case DECL_TYPE_ALIAS:
+            free(decl->data.type_alias.name);
+            free(decl->data.type_alias.target_type);
+            break;
+        case DECL_ENUM:
+            free(decl->data.enum_decl.name);
+            enum_variant_list_free(decl->data.enum_decl.variants);
+            break;
         case DECL_INTERFACE:
             free(decl->data.interface.name);
             interface_method_list_free(decl->data.interface.methods);
@@ -717,6 +743,34 @@ void decl_free(Decl *decl) {
 }
 
 DeclList *decl_list_new(void) { return NULL; }
+
+EnumVariantList *enum_variant_list_new(char *name, int value) {
+    EnumVariantList *node = malloc(sizeof(EnumVariantList));
+    node->name = str_dup(name);
+    node->value = value;
+    node->next = NULL;
+    return node;
+}
+
+void enum_variant_list_append(EnumVariantList **list, EnumVariantList *variant) {
+    if (!variant) return;
+    if (!*list) {
+        *list = variant;
+        return;
+    }
+    EnumVariantList *cur = *list;
+    while (cur->next) cur = cur->next;
+    cur->next = variant;
+}
+
+void enum_variant_list_free(EnumVariantList *list) {
+    while (list) {
+        EnumVariantList *next = list->next;
+        free(list->name);
+        free(list);
+        list = next;
+    }
+}
 
 void decl_list_append(DeclList **list, Decl *decl) {
     DeclList *node = malloc(sizeof(DeclList));

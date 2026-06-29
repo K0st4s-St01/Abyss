@@ -7,6 +7,8 @@ typedef enum {
     DECL_FUNC,
     DECL_STRUCT,
     DECL_STRUCT_FIELD,
+    DECL_TYPE_ALIAS,
+    DECL_ENUM,
     DECL_INTERFACE,
     DECL_INTERFACE_METHOD,
     DECL_IMPORT,
@@ -75,6 +77,22 @@ typedef struct {
 } StructDecl;
 
 typedef struct {
+    char *name;
+    char *target_type;
+} TypeAliasDecl;
+
+typedef struct EnumVariantList {
+    char *name;
+    int value;
+    struct EnumVariantList *next;
+} EnumVariantList;
+
+typedef struct {
+    char *name;
+    EnumVariantList *variants;
+} EnumDecl;
+
+typedef struct {
     char *return_type;
     char *name;
     FuncParamList *params;
@@ -103,6 +121,8 @@ struct Decl {
     union {
         FuncDecl func;
         StructDecl struct_decl;
+        TypeAliasDecl type_alias;
+        EnumDecl enum_decl;
         InterfaceDecl interface;
         ImportDecl import;
     } data;
@@ -154,9 +174,15 @@ void generic_param_list_free(GenericParamList *list);
 
 Decl *decl_new_func(char *return_type, char *name, FuncParamList *params, GenericParamList *generic_params, Stmt *body, DecoratorList *decorators, int is_extern, int is_variadic, SourceLocation loc);
 Decl *decl_new_struct(char *name, StructFieldList *fields, GenericParamList *generic_params, DeclList *methods, DecoratorList *decorators, SourceLocation loc);
+Decl *decl_new_type_alias(char *name, char *target_type, SourceLocation loc);
+Decl *decl_new_enum(char *name, EnumVariantList *variants, SourceLocation loc);
 Decl *decl_new_interface(char *name, InterfaceMethodList *methods, GenericParamList *generic_params, SourceLocation loc);
 Decl *decl_new_import(char *module_name, SourceLocation loc);
 void decl_free(Decl *decl);
+
+EnumVariantList *enum_variant_list_new(char *name, int value);
+void enum_variant_list_append(EnumVariantList **list, EnumVariantList *variant);
+void enum_variant_list_free(EnumVariantList *list);
 
 DeclList *decl_list_new(void);
 void decl_list_append(DeclList **list, Decl *decl);

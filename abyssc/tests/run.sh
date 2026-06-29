@@ -29,3 +29,4 @@ run_case() {
 run_case high_priority_literals.as 42
 run_case switch.as 90
 run_case pointer_array.as 60
+run_case else_if.as 20

@@ -544,7 +544,8 @@ static bool is_type_start(Token *t) {
 static void synchronize_top_level(Parser *p) {
     while (!check(p, EndOfFile)) {
         Token *t = peek(p);
-        if (!t || t->type == Import || t->type == Struct || t->type == Interface ||
+        if (!t || t->type == Import || t->type == Type || t->type == Enum ||
+            t->type == Struct || t->type == Interface ||
             t->type == Extern || is_type_start(t)) {
             p->panic_mode = false;
             return;
@@ -757,11 +758,49 @@ static Decl *parse_import_decl(Parser *p) {
     return decl_new_import(mod ? mod->text : "", t->loc);
 }
 
+static Decl *parse_type_alias_decl(Parser *p) {
+    Token *t = advance(p);
+    Token *name = expect(p, Identifier);
+    expect(p, Equals);
+    char *target = parse_type_name(p);
+    expect(p, Semicolon);
+    Decl *decl = decl_new_type_alias(name ? name->text : "", target ? target : "", t->loc);
+    free(target);
+    return decl;
+}
+
+static Decl *parse_enum_decl(Parser *p) {
+    Token *t = advance(p);
+    Token *name = expect(p, Identifier);
+    expect(p, LBrace);
+
+    EnumVariantList *variants = NULL;
+    int next_value = 0;
+    while (!check(p, RBrace) && !check(p, EndOfFile)) {
+        Token *variant = expect(p, Identifier);
+        int value = next_value;
+        if (match(p, Equals)) {
+            Token *lit = expect(p, IntLiteral);
+            if (lit) value = atoi(lit->text);
+        }
+        if (variant)
+            enum_variant_list_append(&variants, enum_variant_list_new(variant->text, value));
+        next_value = value + 1;
+        if (!match(p, Comma))
+            break;
+    }
+
+    expect(p, RBrace);
+    return decl_new_enum(name ? name->text : "", variants, t->loc);
+}
+
 static Decl *parse_top_level(Parser *p) {
     Token *t = peek(p);
     if (!t) return NULL;
 
     if (t->type == Import)  return parse_import_decl(p);
+    if (t->type == Type)    return parse_type_alias_decl(p);
+    if (t->type == Enum)    return parse_enum_decl(p);
     if (t->type == Struct)  return parse_struct_decl(p);
     if (t->type == Interface) return parse_interface_decl(p);
 

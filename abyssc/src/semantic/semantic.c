@@ -354,6 +354,22 @@ static int types_compatible(const char *expected, const char *actual) {
     return 0;
 }
 
+static char *resolve_alias_type(SemanticAnalyzer *a, const char *type) {
+    if (!type) return NULL;
+    if (type_is_ptr(type)) {
+        char *base = type_deref(type);
+        char *resolved_base = resolve_alias_type(a, base);
+        char *result = type_make_ptr(resolved_base ? resolved_base : base);
+        free(base);
+        free(resolved_base);
+        return result;
+    }
+    Symbol *sym = scope_lookup(a->scope, type);
+    if (sym && sym->type_name && strcmp(sym->type_name, type) != 0)
+        return strdup(sym->type_name);
+    return strdup(type);
+}
+
 /* ── Forward declarations ──────────────────────────────────── */
 
 static char *analyze_expr(SemanticAnalyzer *a, Expr *expr);
@@ -1010,6 +1026,34 @@ static void analyze_interface_decl(SemanticAnalyzer *a, Decl *decl) {
                            iface->generic_params);
 }
 
+static void analyze_type_alias_decl(SemanticAnalyzer *a, Decl *decl) {
+    TypeAliasDecl *alias = &decl->data.type_alias;
+    if (scope_lookup_current(a->scope, alias->name)) {
+        sem_error(a, decl->loc, "redeclaration of type alias '%s'", alias->name);
+        return;
+    }
+    char *target = resolve_alias_type(a, alias->target_type);
+    scope_insert(a->scope, alias->name, target ? target : alias->target_type,
+                 0, 0, 0, NULL, decl->loc);
+    free(target);
+}
+
+static void analyze_enum_decl(SemanticAnalyzer *a, Decl *decl) {
+    EnumDecl *en = &decl->data.enum_decl;
+    if (scope_lookup_current(a->scope, en->name)) {
+        sem_error(a, decl->loc, "redeclaration of enum '%s'", en->name);
+        return;
+    }
+    scope_insert(a->scope, en->name, "i32", 0, 0, 0, NULL, decl->loc);
+    for (EnumVariantList *v = en->variants; v; v = v->next) {
+        if (scope_lookup_current(a->scope, v->name)) {
+            sem_error(a, decl->loc, "redeclaration of enum variant '%s'", v->name);
+            continue;
+        }
+        scope_insert(a->scope, v->name, "i32", 0, 0, 0, NULL, decl->loc);
+    }
+}
+
 static void analyze_decl(SemanticAnalyzer *a, Decl *decl) {
     if (!decl) return;
 
@@ -1019,6 +1063,12 @@ static void analyze_decl(SemanticAnalyzer *a, Decl *decl) {
         break;
     case DECL_STRUCT:
         analyze_struct_decl(a, decl);
+        break;
+    case DECL_TYPE_ALIAS:
+        analyze_type_alias_decl(a, decl);
+        break;
+    case DECL_ENUM:
+        analyze_enum_decl(a, decl);
         break;
     case DECL_INTERFACE:
         analyze_interface_decl(a, decl);

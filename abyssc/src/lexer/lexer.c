@@ -148,7 +148,7 @@ Token *lexer_next_token(Lexer *lexer){
  	
 }
 
-static char* keywords[21] = {
+static char* keywords[23] = {
   "if"
   ,"else"
   ,"elif"
@@ -159,6 +159,8 @@ static char* keywords[21] = {
   ,"for"
   ,"do"
   ,"static"
+  ,"type"
+  ,"enum"
   ,"struct"
   ,"interface"
   ,"import"
@@ -200,8 +202,8 @@ Token *lexer_make_identifier_or_keyword(Lexer *lexer){
     }
     char* current_word = string_builder_to_string(sb);
     string_builder_free(sb);
-  	for(int i =0;i<21;i++){
-   		if(i < 21 && strcmp(current_word,keywords[i]) == 0){
+  	for(int i =0;i<23;i++){
+   		if(i < 23 && strcmp(current_word,keywords[i]) == 0){
      		Token *tok = token_new(lexer_current_location(lexer),current_word,i + 20);
   			free(current_word);
   			return tok;

@@ -36,6 +36,8 @@ typedef enum{
   ,For
   ,Do
   ,Static
+  ,Type
+  ,Enum
   ,Struct
   ,Interface
   ,Import
