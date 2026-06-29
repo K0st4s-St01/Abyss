@@ -201,6 +201,7 @@ struct SemanticAnalyzer {
     char *current_func_return;
     char *current_struct_name;
     int loop_depth;
+    int switch_depth;
     int had_error;
     Error *errors;
     Error *error_tail;
@@ -377,6 +378,9 @@ static char *analyze_expr(SemanticAnalyzer *a, Expr *expr) {
 
     case EXPR_STRING_LIT:
         return strdup("str");
+
+    case EXPR_NULL:
+        return strdup("void");
 
     case EXPR_IDENTIFIER: {
         const char *name = expr->data.identifier.name;
@@ -800,6 +804,29 @@ static void analyze_stmt(SemanticAnalyzer *a, Stmt *stmt) {
         analyze_block(a, stmt->data.if_stmt.else_block);
         break;
 
+    case STMT_SWITCH: {
+        char *st = analyze_expr(a, stmt->data.switch_stmt.expr);
+        if (st && !is_numeric_type(st) && !types_equal(st, "char")) {
+            sem_error(a, stmt->loc, "switch expression must be numeric or char, got '%s'", st);
+        }
+
+        a->switch_depth++;
+        for (SwitchCase *sc = stmt->data.switch_stmt.cases; sc; sc = sc->next) {
+            char *ct = analyze_expr(a, sc->value);
+            if (st && ct && !types_compatible(st, ct)) {
+                sem_error(a, sc->value->loc,
+                          "case value type '%s' is not compatible with switch type '%s'",
+                          ct, st);
+            }
+            free(ct);
+            analyze_stmt_list(a, sc->stmts);
+        }
+        analyze_stmt_list(a, stmt->data.switch_stmt.default_stmts);
+        a->switch_depth--;
+        free(st);
+        break;
+    }
+
     case STMT_WHILE:
         if (stmt->data.while_stmt.condition) {
             char *ct = analyze_expr(a, stmt->data.while_stmt.condition);
@@ -846,8 +873,8 @@ static void analyze_stmt(SemanticAnalyzer *a, Stmt *stmt) {
         break;
 
     case STMT_BREAK:
-        if (a->loop_depth == 0) {
-            sem_error(a, stmt->loc, "break outside of loop");
+        if (a->loop_depth == 0 && a->switch_depth == 0) {
+            sem_error(a, stmt->loc, "break outside of loop or switch");
         }
         break;
 

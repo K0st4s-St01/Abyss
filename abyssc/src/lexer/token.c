@@ -30,7 +30,7 @@ bool token_is_literal(Token *token){
 }
 bool token_is_keyword(Token *token){
   return token_is_primitive_type(token) ||
-          between(token->type,If,Delete);
+          between(token->type,If,Null);
 }
 bool token_is_operator(Token *token){
   return between(token->type,Arrow,Tilde);

@@ -20,6 +20,7 @@ static Token *expect(Parser *p, TokenType type) {
     Token *t = peek(p);
     if (!t || t->type != type) {
         p->had_error = true;
+        p->panic_mode = true;
         snprintf(p->error_msg, sizeof(p->error_msg),
                  "expected token type %d, got %d at %s:%d:%d",
                  type, t ? t->type : -1,
@@ -51,13 +52,33 @@ static SourceLocation loc(Parser *p) {
 }
 
 static void parser_error(Parser *p, const char *msg) {
-    if (p->had_error) return;
+    if (p->panic_mode) return;
     p->had_error = true;
+    p->panic_mode = true;
     Token *t = peek(p);
     snprintf(p->error_msg, sizeof(p->error_msg), "%s at %s:%d:%d",
              msg,
              t ? t->loc.filename : "?",
              t ? t->loc.line : 0, t ? t->loc.col : 0);
+}
+
+static void synchronize_statement(Parser *p) {
+    while (!check(p, EndOfFile)) {
+        if (match(p, Semicolon)) {
+            p->panic_mode = false;
+            return;
+        }
+        Token *t = peek(p);
+        if (!t || t->type == RBrace || t->type == Case || t->type == Default ||
+            t->type == Return || t->type == If || t->type == Switch ||
+            t->type == While || t->type == For || t->type == Do ||
+            t->type == Break || t->type == Continue) {
+            p->panic_mode = false;
+            return;
+        }
+        advance(p);
+    }
+    p->panic_mode = false;
 }
 
 /* ── Type name parsing ──────────────────────────────────────── */
@@ -179,6 +200,11 @@ static Expr *parse_primary(Parser *p) {
     if (t->type == StringLiteral) {
         advance(p);
         return expr_new_string(t->text, t->loc);
+    }
+
+    if (t->type == Null) {
+        advance(p);
+        return expr_new_null(t->loc);
     }
 
     if (t->type == Identifier || t->type == Self) {
@@ -359,10 +385,76 @@ static Stmt *parse_if_stmt(Parser *p) {
 
     Stmt *else_b = NULL;
     if (match(p, Else)) {
-        else_b = parse_block(p);
+        if (check(p, If)) {
+            Stmt *nested_if = parse_if_stmt(p);
+            StmtList *stmts = NULL;
+            stmt_list_append(&stmts, nested_if);
+            else_b = stmt_new_block(stmts, nested_if ? nested_if->loc : t->loc);
+        } else {
+            else_b = parse_block(p);
+        }
     }
 
     return stmt_new_if(cond, then_b, elifs, else_b, t->loc);
+}
+
+static StmtList *parse_switch_stmt_list(Parser *p) {
+    StmtList *stmts = NULL;
+    while (!check(p, Case) && !check(p, Default) &&
+           !check(p, RBrace) && !check(p, EndOfFile)) {
+        if (p->panic_mode) {
+            synchronize_statement(p);
+            if (check(p, Case) || check(p, Default) ||
+                check(p, RBrace) || check(p, EndOfFile)) break;
+        }
+        Stmt *s = parse_statement(p);
+        if (s) stmt_list_append(&stmts, s);
+    }
+    return stmts;
+}
+
+static Stmt *parse_switch_stmt(Parser *p) {
+    Token *t = advance(p);
+    expect(p, LParen);
+    Expr *expr = parse_expr(p);
+    expect(p, RParen);
+    expect(p, LBrace);
+
+    SwitchCase *cases = NULL;
+    SwitchCase *case_tail = NULL;
+    StmtList *default_stmts = NULL;
+
+    while (!check(p, RBrace) && !check(p, EndOfFile)) {
+        if (p->panic_mode) {
+            synchronize_statement(p);
+            if (check(p, RBrace) || check(p, EndOfFile)) break;
+        }
+        if (match(p, Case)) {
+            Expr *value = parse_expr(p);
+            expect(p, Scope);
+            StmtList *stmts = parse_switch_stmt_list(p);
+            SwitchCase *sc = switch_case_new(value, stmts);
+            if (!cases) { cases = sc; case_tail = sc; }
+            else { case_tail->next = sc; case_tail = sc; }
+            continue;
+        }
+
+        if (match(p, Default)) {
+            if (default_stmts) {
+                parser_error(p, "duplicate default in switch");
+                break;
+            }
+            expect(p, Scope);
+            default_stmts = parse_switch_stmt_list(p);
+            continue;
+        }
+
+        parser_error(p, "expected case or default in switch");
+        break;
+    }
+
+    expect(p, RBrace);
+    return stmt_new_switch(expr, cases, default_stmts, t->loc);
 }
 
 static Stmt *parse_while_stmt(Parser *p) {
@@ -431,7 +523,11 @@ static Stmt *parse_do_while_stmt(Parser *p) {
 static Stmt *parse_block(Parser *p) {
     Token *t = expect(p, LBrace);
     StmtList *stmts = NULL;
-    while (!check(p, RBrace) && !check(p, EndOfFile) && !p->had_error) {
+    while (!check(p, RBrace) && !check(p, EndOfFile)) {
+        if (p->panic_mode) {
+            synchronize_statement(p);
+            if (check(p, RBrace) || check(p, EndOfFile)) break;
+        }
         Stmt *s = parse_statement(p);
         if (s) stmt_list_append(&stmts, s);
     }
@@ -443,6 +539,19 @@ static bool is_type_start(Token *t) {
     if (!t) return false;
     return token_is_primitive_type(t) || t->type == Void ||
            t->type == Identifier;
+}
+
+static void synchronize_top_level(Parser *p) {
+    while (!check(p, EndOfFile)) {
+        Token *t = peek(p);
+        if (!t || t->type == Import || t->type == Struct || t->type == Interface ||
+            t->type == Extern || is_type_start(t)) {
+            p->panic_mode = false;
+            return;
+        }
+        advance(p);
+    }
+    p->panic_mode = false;
 }
 
 static Stmt *parse_var_decl(Parser *p) {
@@ -467,6 +576,7 @@ static Stmt *parse_statement(Parser *p) {
     switch (t->type) {
         case Return:   return parse_return_stmt(p);
         case If:       return parse_if_stmt(p);
+        case Switch:   return parse_switch_stmt(p);
         case While:    return parse_while_stmt(p);
         case For:      return parse_for_stmt(p);
         case Do:       return parse_do_while_stmt(p);
@@ -552,7 +662,11 @@ static Decl *parse_func_decl(Parser *p, char *ret_type, char *name, GenericParam
 
 static StructFieldList *parse_struct_fields(Parser *p) {
     StructFieldList *fields = NULL;
-    while (!check(p, RBrace) && !p->had_error) {
+    while (!check(p, RBrace) && !check(p, EndOfFile)) {
+        if (p->panic_mode) {
+            synchronize_statement(p);
+            if (check(p, RBrace) || check(p, EndOfFile)) break;
+        }
         Token *t = peek(p);
         if (is_type_start(t) && p->pos + 1 < p->tokens->size) {
             Token *next = p->tokens->toks[p->pos + 1];
@@ -587,7 +701,11 @@ static Decl *parse_struct_decl(Parser *p) {
     StructFieldList *fields = parse_struct_fields(p);
 
     DeclList *methods = NULL;
-    while (!check(p, RBrace) && !p->had_error) {
+    while (!check(p, RBrace) && !check(p, EndOfFile)) {
+        if (p->panic_mode) {
+            synchronize_statement(p);
+            if (check(p, RBrace) || check(p, EndOfFile)) break;
+        }
         Token *mt = peek(p);
         if (is_type_start(mt)) {
             char *ty = parse_type_name(p);
@@ -613,7 +731,11 @@ static Decl *parse_interface_decl(Parser *p) {
     expect(p, LBrace);
 
     InterfaceMethodList *methods = NULL;
-    while (!check(p, RBrace) && !p->had_error) {
+    while (!check(p, RBrace) && !check(p, EndOfFile)) {
+        if (p->panic_mode) {
+            synchronize_statement(p);
+            if (check(p, RBrace) || check(p, EndOfFile)) break;
+        }
         char *ret = parse_type_name(p);
         Token *mname = expect(p, Identifier);
         expect(p, LParen);
@@ -677,6 +799,7 @@ Parser *parser_new(Tokens *tokens) {
     p->tokens = tokens;
     p->pos = 0;
     p->had_error = false;
+    p->panic_mode = false;
     p->error_msg[0] = '\0';
     return p;
 }
@@ -688,9 +811,15 @@ void parser_free(Parser *p) {
 Program *parse_program(Parser *p, char *filename) {
     Program *prog = program_new(filename);
 
-    while (!check(p, EndOfFile) && !p->had_error) {
+    while (!check(p, EndOfFile)) {
+        if (p->panic_mode) {
+            synchronize_top_level(p);
+            if (check(p, EndOfFile)) break;
+        }
         Decl *d = parse_top_level(p);
         if (d) program_add_decl(prog, d);
+        if (p->panic_mode)
+            synchronize_top_level(p);
     }
 
     if (p->had_error) {

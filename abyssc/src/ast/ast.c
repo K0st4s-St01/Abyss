@@ -150,6 +150,13 @@ Expr *expr_new_delete(Expr *operand, int dim_count, SourceLocation loc) {
     return e;
 }
 
+Expr *expr_new_null(SourceLocation loc) {
+    Expr *e = malloc(sizeof(Expr));
+    e->type = EXPR_NULL;
+    e->loc = loc;
+    return e;
+}
+
 void expr_free(Expr *expr) {
     if (!expr) return;
     switch (expr->type) {
@@ -197,6 +204,8 @@ void expr_free(Expr *expr) {
             break;
         case EXPR_DELETE:
             expr_free(expr->data.delete_expr.operand);
+            break;
+        case EXPR_NULL:
             break;
     }
     free(expr);
@@ -274,6 +283,16 @@ Stmt *stmt_new_if(Expr *condition, Stmt *then_block, ElifClause *elifs, Stmt *el
     return s;
 }
 
+Stmt *stmt_new_switch(Expr *expr, SwitchCase *cases, StmtList *default_stmts, SourceLocation loc) {
+    Stmt *s = malloc(sizeof(Stmt));
+    s->type = STMT_SWITCH;
+    s->loc = loc;
+    s->data.switch_stmt.expr = expr;
+    s->data.switch_stmt.cases = cases;
+    s->data.switch_stmt.default_stmts = default_stmts;
+    return s;
+}
+
 Stmt *stmt_new_while(Expr *condition, Stmt *body, SourceLocation loc) {
     Stmt *s = malloc(sizeof(Stmt));
     s->type = STMT_WHILE;
@@ -340,6 +359,11 @@ void stmt_free(Stmt *stmt) {
             elif_clause_free(stmt->data.if_stmt.elifs);
             stmt_free(stmt->data.if_stmt.else_block);
             break;
+        case STMT_SWITCH:
+            expr_free(stmt->data.switch_stmt.expr);
+            switch_case_free(stmt->data.switch_stmt.cases);
+            stmt_list_free(stmt->data.switch_stmt.default_stmts);
+            break;
         case STMT_WHILE:
             expr_free(stmt->data.while_stmt.condition);
             stmt_free(stmt->data.while_stmt.body);
@@ -400,6 +424,24 @@ void elif_clause_free(ElifClause *clause) {
         stmt_free(clause->body);
         free(clause);
         clause = next;
+    }
+}
+
+SwitchCase *switch_case_new(Expr *value, StmtList *stmts) {
+    SwitchCase *c = malloc(sizeof(SwitchCase));
+    c->value = value;
+    c->stmts = stmts;
+    c->next = NULL;
+    return c;
+}
+
+void switch_case_free(SwitchCase *case_list) {
+    while (case_list) {
+        SwitchCase *next = case_list->next;
+        expr_free(case_list->value);
+        stmt_list_free(case_list->stmts);
+        free(case_list);
+        case_list = next;
     }
 }
 

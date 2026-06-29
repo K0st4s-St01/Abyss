@@ -59,6 +59,8 @@ static void print_expr(Expr *e, int depth) {
             print_indent(depth); printf("CharLit(%s)\n", e->data.char_lit.value); break;
         case EXPR_STRING_LIT:
             print_indent(depth); printf("StringLit(%s)\n", e->data.string_lit.value); break;
+        case EXPR_NULL:
+            print_indent(depth); printf("Null\n"); break;
         case EXPR_IDENTIFIER:
             print_indent(depth); printf("Ident(%s)\n", e->data.identifier.name); break;
         case EXPR_BINARY:
@@ -154,6 +156,21 @@ static void print_stmt(Stmt *s, int depth) {
                 print_stmt(s->data.if_stmt.else_block, depth + 2);
             }
             break;
+        case STMT_SWITCH:
+            print_indent(depth); printf("Switch:\n");
+            print_expr(s->data.switch_stmt.expr, depth + 1);
+            for (SwitchCase *sc = s->data.switch_stmt.cases; sc; sc = sc->next) {
+                print_indent(depth + 1); printf("Case:\n");
+                print_expr(sc->value, depth + 2);
+                for (StmtList *sl = sc->stmts; sl; sl = sl->next)
+                    print_stmt(sl->stmt, depth + 2);
+            }
+            if (s->data.switch_stmt.default_stmts) {
+                print_indent(depth + 1); printf("Default:\n");
+                for (StmtList *sl = s->data.switch_stmt.default_stmts; sl; sl = sl->next)
+                    print_stmt(sl->stmt, depth + 2);
+            }
+            break;
         case STMT_WHILE:
             print_indent(depth); printf("While:\n");
             print_expr(s->data.while_stmt.condition, depth + 1);
@@ -238,6 +255,7 @@ static void print_decl(Decl *d, int depth) {
 int main(int argc, char **argv) {
     int emit_llvm = 0;
     int compile = 0;
+    int link_exe = 0;
     const char *output_name = NULL;
 
     if(argc < 2){
@@ -245,6 +263,7 @@ int main(int argc, char **argv) {
         puts("-f <file_1,..,file_n>");
         puts("-emit-llvm <file>   emit LLVM IR");
         puts("-c <file>           compile to .o via clang");
+        puts("-link <file>        compile and link executable via clang");
         puts("-o <name>           set output file name");
         return 0;
     }
@@ -257,6 +276,10 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-emit-llvm") == 0) { emit_llvm = 1; continue; }
         if (strcmp(argv[i], "-c") == 0)          { compile = 1;    continue; }
+        if (strcmp(argv[i], "-link") == 0 || strcmp(argv[i], "-exe") == 0) {
+            link_exe = 1;
+            continue;
+        }
         if (strcmp(argv[i], "-o") == 0) {
             if (i + 1 < argc) output_name = argv[++i];
             continue;
@@ -316,7 +339,7 @@ int main(int argc, char **argv) {
             }
             semantic_analyzer_free(analyzer);
 
-            if (ok && (emit_llvm || compile)) {
+            if (ok && (emit_llvm || compile || link_exe)) {
                 CodegenCtx *cg = codegen_new(argv[i]);
                 if (codegen_program(cg, prog)) {
                     char llname[512];
@@ -326,7 +349,7 @@ int main(int argc, char **argv) {
                     else
                         fprintf(stderr, "error writing %s\n", llname);
 
-                    if (compile) {
+                    if (compile || link_exe) {
                         char oname[512];
                         if (output_name) {
                             snprintf(oname, sizeof(oname), "%s", output_name);
@@ -340,9 +363,25 @@ int main(int argc, char **argv) {
                             }
                         }
 
-                        /* Compile LLVM IR to an object file. */
                         char cmd[4096];
-                        snprintf(cmd, sizeof(cmd), "clang -c \"%s\" -o \"%s\"", llname, oname);
+                        if (compile) {
+                            snprintf(cmd, sizeof(cmd), "clang -c \"%s\" -o \"%s\"", llname, oname);
+                        } else {
+                            char extra_objs[2048] = "";
+                            char obj_dir[] = "/tmp/abyssc_import_XXXXXX";
+                            char *tmpdir = mkdtemp(obj_dir);
+                            for (int j = 0; j < lib_count; j++) {
+                                char obj_path[1024];
+                                snprintf(obj_path, sizeof(obj_path), "%s/lib_%d.o", tmpdir, j);
+                                if (ir_extract_library_object(lib_paths[j], obj_path)) {
+                                    char tail[2048];
+                                    snprintf(tail, sizeof(tail), " \"%s\"", obj_path);
+                                    strcat(extra_objs, tail);
+                                }
+                            }
+                            snprintf(cmd, sizeof(cmd), "clang \"%s\" -o \"%s\" -lm%s",
+                                     llname, oname, extra_objs);
+                        }
                         fprintf(stderr, "%s\n", cmd);
                         int ret = system(cmd);
                         if (ret != 0)

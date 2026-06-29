@@ -30,6 +30,8 @@ typedef enum{
   ,Else
   ,Elif
   ,Switch
+  ,Case
+  ,Default
   ,While
   ,For
   ,Do
@@ -44,6 +46,7 @@ typedef enum{
   ,Extern
   ,New
   ,Delete
+  ,Null
   //operator
   ,Generic       // <>
   ,Arrow

@@ -21,6 +21,7 @@ typedef enum {
     EXPR_ASSIGN,
     EXPR_NEW,
     EXPR_DELETE,
+    EXPR_NULL,
 } ExprType;
 
 typedef struct Expr Expr;
@@ -82,6 +83,7 @@ Expr *expr_new_cast(char *type_name, Expr *operand, SourceLocation loc);
 Expr *expr_new_assign(char *name, Expr *value, SourceLocation loc);
 Expr *expr_new_new(char *type_name, ExprList *dims, SourceLocation loc);
 Expr *expr_new_delete(Expr *operand, int dim_count, SourceLocation loc);
+Expr *expr_new_null(SourceLocation loc);
 void expr_free(Expr *expr);
 ExprList *expr_list_new(void);
 void expr_list_append(ExprList **list, Expr *expr);

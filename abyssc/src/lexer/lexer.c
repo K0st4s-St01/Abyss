@@ -148,11 +148,13 @@ Token *lexer_next_token(Lexer *lexer){
  	
 }
 
-static char* keywords[18] = {
+static char* keywords[21] = {
   "if"
   ,"else"
   ,"elif"
   ,"switch"
+  ,"case"
+  ,"default"
   ,"while"
   ,"for"
   ,"do"
@@ -167,6 +169,7 @@ static char* keywords[18] = {
   ,"extern"
   ,"new"
   ,"delete"
+  ,"null"
 };
 
 static char* primitives[13] ={
@@ -197,8 +200,8 @@ Token *lexer_make_identifier_or_keyword(Lexer *lexer){
     }
     char* current_word = string_builder_to_string(sb);
     string_builder_free(sb);
-  	for(int i =0;i<18;i++){
-   		if(i < 18 && strcmp(current_word,keywords[i]) == 0){
+  	for(int i =0;i<21;i++){
+   		if(i < 21 && strcmp(current_word,keywords[i]) == 0){
      		Token *tok = token_new(lexer_current_location(lexer),current_word,i + 20);
   			free(current_word);
   			return tok;
@@ -309,7 +312,7 @@ Token *lexer_make_punctuation(Lexer *lexer){
   			if(lexer_match(lexer,':')){
   				return token_new(lexer_current_location(lexer),"::",Scope);
       		}else{
-	       		return token_new(lexer_current_location(lexer),"<INVALID>",Invalid);
+	       		return token_new(lexer_current_location(lexer),":",Scope);
         	}
 		case '@':return token_new(lexer_current_location(lexer),"@",At);
 		case '(':return token_new(lexer_current_location(lexer),"(",LParen);
@@ -402,6 +405,3 @@ Token *lexer_make_operator(Lexer *lexer){
 bool lexer_has_next(Lexer* lexer){
 	return lexer->index < lexer->source_code_len;
 }
-
-
-

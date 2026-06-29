@@ -9,6 +9,7 @@ typedef struct {
     Tokens *tokens;
     size_t pos;
     bool had_error;
+    bool panic_mode;
     char error_msg[256];
 } Parser;
 
