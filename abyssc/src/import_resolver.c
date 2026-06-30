@@ -304,7 +304,7 @@ bool ir_inject_import(const char *package_name, Program *program, Decl *after_de
             strdup(pf->return_type),
             strdup(pf->name),
             params, NULL,
-            NULL, NULL, pf->is_extern, pf->is_variadic, loc);
+            NULL, NULL, 0, pf->is_extern, pf->is_variadic, loc);
         program_insert_decl_after(program, after_decl, decl);
         after_decl = decl;
     }

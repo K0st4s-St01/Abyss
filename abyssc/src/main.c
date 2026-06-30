@@ -59,6 +59,8 @@ static void print_expr(Expr *e, int depth) {
             print_indent(depth); printf("CharLit(%s)\n", e->data.char_lit.value); break;
         case EXPR_STRING_LIT:
             print_indent(depth); printf("StringLit(%s)\n", e->data.string_lit.value); break;
+        case EXPR_BOOL_LIT:
+            print_indent(depth); printf("BoolLit(%s)\n", e->data.bool_lit.value ? "true" : "false"); break;
         case EXPR_NULL:
             print_indent(depth); printf("Null\n"); break;
         case EXPR_IDENTIFIER:
@@ -116,6 +118,22 @@ static void print_expr(Expr *e, int depth) {
             print_indent(depth); printf("Delete[%d]\n", e->data.delete_expr.dim_count);
             print_expr(e->data.delete_expr.operand, depth + 1);
             break;
+        case EXPR_SIZEOF:
+            print_indent(depth); printf("Sizeof(%s)\n", e->data.sizeof_expr.type_name);
+            break;
+        case EXPR_ARRAY_LIT:
+            print_indent(depth); printf("ArrayLit(\n");
+            for (ExprList *el = e->data.array_lit.elements; el; el = el->next)
+                print_expr(el->expr, depth + 1);
+            print_indent(depth); printf(")\n");
+            break;
+        case EXPR_CONDITIONAL:
+            print_indent(depth); printf("Conditional(\n");
+            print_expr(e->data.conditional.condition, depth + 1);
+            print_expr(e->data.conditional.then_expr, depth + 1);
+            print_expr(e->data.conditional.else_expr, depth + 1);
+            print_indent(depth); printf(")\n");
+            break;
     }
 }
 
@@ -136,9 +154,9 @@ static void print_stmt(Stmt *s, int depth) {
                 print_stmt(sl->stmt, depth + 1);
             break;
         case STMT_VAR_DECL:
-            print_indent(depth); printf("VarDecl(%s %s, ptr=%d)\n",
+            print_indent(depth); printf("VarDecl(%s %s, ptr=%d, array=%d)\n",
                 s->data.var_decl.type_name, s->data.var_decl.name,
-                s->data.var_decl.is_ptr);
+                s->data.var_decl.is_ptr, s->data.var_decl.array_size);
             if (s->data.var_decl.init)
                 print_expr(s->data.var_decl.init, depth + 1);
             break;
@@ -213,8 +231,9 @@ static void print_func_params(FuncParamList *params, int depth) {
 static void print_struct_fields(StructFieldList *fields, int depth) {
     for (StructFieldList *fl = fields; fl; fl = fl->next) {
         print_indent(depth);
-        printf("Field(%s %s, ptr=%d)\n",
-            fl->field.type_name, fl->field.name, fl->field.is_ptr);
+        printf("Field(%s %s, ptr=%d, array=%d)\n",
+            fl->field.type_name, fl->field.name, fl->field.is_ptr,
+            fl->field.array_size);
     }
 }
 
@@ -223,11 +242,23 @@ static void print_decl(Decl *d, int depth) {
     switch (d->type) {
         case DECL_FUNC:
             print_indent(depth);
-            printf("Func(%s %s)\n", d->data.func.return_type, d->data.func.name);
+            printf("Func(%s%s %s)\n",
+                d->data.func.is_static ? "static " : "",
+                d->data.func.return_type, d->data.func.name);
             if (d->data.func.generic_params)
                 print_generic_params(d->data.func.generic_params, depth + 1);
             print_func_params(d->data.func.params, depth + 1);
             print_stmt(d->data.func.body, depth + 1);
+            break;
+        case DECL_GLOBAL_VAR:
+            print_indent(depth);
+            printf("GlobalVar(%s%s%s %s, array=%d)\n",
+                d->data.global_var.is_static ? "static " : "",
+                d->data.global_var.is_extern ? "extern " : "",
+                d->data.global_var.type_name, d->data.global_var.name,
+                d->data.global_var.array_size);
+            if (d->data.global_var.init)
+                print_expr(d->data.global_var.init, depth + 1);
             break;
         case DECL_STRUCT:
             print_indent(depth);
@@ -237,6 +268,19 @@ static void print_decl(Decl *d, int depth) {
             print_struct_fields(d->data.struct_decl.fields, depth + 1);
             for (DeclList *ml = d->data.struct_decl.methods; ml; ml = ml->next)
                 print_decl(ml->decl, depth + 1);
+            break;
+        case DECL_TYPE_ALIAS:
+            print_indent(depth);
+            printf("TypeAlias(%s = %s)\n",
+                d->data.type_alias.name, d->data.type_alias.target_type);
+            break;
+        case DECL_ENUM:
+            print_indent(depth);
+            printf("Enum(%s)\n", d->data.enum_decl.name);
+            for (EnumVariantList *v = d->data.enum_decl.variants; v; v = v->next) {
+                print_indent(depth + 1);
+                printf("Variant(%s = %d)\n", v->name, v->value);
+            }
             break;
         case DECL_INTERFACE:
             print_indent(depth);

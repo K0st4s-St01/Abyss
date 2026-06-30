@@ -51,6 +51,35 @@ static SourceLocation loc(Parser *p) {
     return l;
 }
 
+static long long parse_int_literal_value(const char *text) {
+    if (!text) return 0;
+    int base = 10;
+    size_t i = 0;
+    if (text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
+        base = 16;
+        i = 2;
+    } else if (text[0] == '0' && (text[1] == 'b' || text[1] == 'B')) {
+        base = 2;
+        i = 2;
+    } else if (text[0] == '0' && (text[1] == 'o' || text[1] == 'O')) {
+        base = 8;
+        i = 2;
+    }
+
+    long long value = 0;
+    for (; text[i]; i++) {
+        if (text[i] == '_') continue;
+        int digit;
+        if (text[i] >= '0' && text[i] <= '9') digit = text[i] - '0';
+        else if (text[i] >= 'a' && text[i] <= 'f') digit = 10 + text[i] - 'a';
+        else if (text[i] >= 'A' && text[i] <= 'F') digit = 10 + text[i] - 'A';
+        else break;
+        if (digit >= base) break;
+        value = value * base + digit;
+    }
+    return value;
+}
+
 static void parser_error(Parser *p, const char *msg) {
     if (p->panic_mode) return;
     p->had_error = true;
@@ -107,7 +136,7 @@ static char *parse_type_name(Parser *p) {
     if (!t) return NULL;
 
     if (token_is_primitive_type(t) || t->type == Identifier ||
-        t->type == Void) {
+        t->type == Void || t->type == Self) {
         char *name = strdup(t->text);
         advance(p);
         if (check(p, Generic) || (t->type == Identifier && check(p, Less))) {
@@ -142,9 +171,23 @@ static char *parse_type_name(Parser *p) {
 /* ── Forward declarations ───────────────────────────────────── */
 
 static Expr *parse_expr(Parser *p);
+static Expr *parse_expr_precedence(Parser *p, int min_prec);
 static Stmt *parse_statement(Parser *p);
 static Stmt *parse_block(Parser *p);
 static FuncParamList *parse_param_list(Parser *p, int *is_variadic);
+static bool is_type_start(Token *t);
+static bool is_var_decl_start(Parser *p);
+static int parse_array_size_suffix(Parser *p);
+
+static bool is_expr_start(Token *t) {
+    if (!t) return false;
+    return token_is_literal(t) || t->type == IntLiteral || t->type == FloatLiteral ||
+           t->type == Identifier || t->type == Self || t->type == Null ||
+           t->type == True || t->type == False || t->type == LParen ||
+           t->type == Minus || t->type == Star || t->type == Ampersand ||
+           t->type == Bang || t->type == Tilde || t->type == New ||
+           t->type == Delete || t->type == Sizeof;
+}
 
 /* ── Expression parser (precedence climbing) ────────────────── */
 
@@ -202,6 +245,11 @@ static Expr *parse_primary(Parser *p) {
         return expr_new_string(t->text, t->loc);
     }
 
+    if (t->type == True || t->type == False) {
+        advance(p);
+        return expr_new_bool(t->type == True, t->loc);
+    }
+
     if (t->type == Null) {
         advance(p);
         return expr_new_null(t->loc);
@@ -226,16 +274,50 @@ static Expr *parse_primary(Parser *p) {
     }
 
     if (t->type == LParen) {
+        size_t saved = p->pos;
         advance(p);
+        if (is_type_start(peek(p))) {
+            char *type_name = parse_type_name(p);
+            if (type_name && match(p, RParen) && is_expr_start(peek(p))) {
+                Expr *operand = parse_expr_precedence(p, 16);
+                Expr *cast = expr_new_cast(type_name, operand, t->loc);
+                free(type_name);
+                return cast;
+            }
+            free(type_name);
+            p->pos = saved;
+            advance(p);
+        }
         Expr *e = parse_expr(p);
         expect(p, RParen);
         return e;
     }
 
+    if (t->type == LBrace) {
+        advance(p);
+        ExprList *elements = NULL;
+        if (!check(p, RBrace)) {
+            do {
+                Expr *elem = parse_expr(p);
+                if (elem) expr_list_append(&elements, elem);
+                if (check(p, RBrace)) break;
+            } while (match(p, Comma));
+        }
+        expect(p, RBrace);
+        return expr_new_array_lit(elements, t->loc);
+    }
+
+    if (t->type == PlusPlus || t->type == MinusMinus) {
+        TokenType op = t->type == PlusPlus ? PlusEquals : MinusEquals;
+        advance(p);
+        Expr *operand = parse_expr_precedence(p, 16);
+        return expr_new_binary(operand, op, expr_new_int("1", t->loc), t->loc);
+    }
+
     if (t->type == Minus || t->type == Star || t->type == Ampersand || t->type == Bang || t->type == Tilde) {
         TokenType op = t->type;
         advance(p);
-        Expr *operand = parse_primary(p);
+        Expr *operand = parse_expr_precedence(p, 16);
         if (op == Star) return expr_new_deref(operand, t->loc);
         if (op == Ampersand) return expr_new_addrof(operand, t->loc);
         return expr_new_unary(op, operand, t->loc);
@@ -270,6 +352,16 @@ static Expr *parse_primary(Parser *p) {
         return expr_new_delete(operand, dim_count, t->loc);
     }
 
+    if (t->type == Sizeof) {
+        advance(p);
+        expect(p, LParen);
+        char *type_name = parse_type_name(p);
+        expect(p, RParen);
+        Expr *e = expr_new_sizeof(type_name ? type_name : "", t->loc);
+        free(type_name);
+        return e;
+    }
+
     parser_error(p, "unexpected token in expression");
     advance(p);
     return NULL;
@@ -282,6 +374,23 @@ static Expr *parse_expr_precedence(Parser *p, int min_prec) {
     for (;;) {
         Token *t = peek(p);
         if (!t) break;
+
+        if (t->type == Question) {
+            if (2 < min_prec) break;
+            advance(p);
+            Expr *then_expr = parse_expr(p);
+            expect(p, Scope);
+            Expr *else_expr = parse_expr_precedence(p, 2);
+            left = expr_new_conditional(left, then_expr, else_expr, t->loc);
+            continue;
+        }
+
+        if (t->type == PlusPlus || t->type == MinusMinus) {
+            TokenType op = t->type == PlusPlus ? PlusEquals : MinusEquals;
+            advance(p);
+            left = expr_new_binary(left, op, expr_new_int("1", t->loc), t->loc);
+            continue;
+        }
 
         int prec = get_binary_precedence(t->type);
         if (prec < min_prec) break;
@@ -473,20 +582,16 @@ static Stmt *parse_for_stmt(Parser *p) {
     Stmt *init = NULL;
     if (!check(p, Semicolon)) {
         Token *tt = peek(p);
-        if (token_is_primitive_type(tt) || tt->type == Identifier) {
-            Token *saved = tt;
-            if (token_is_primitive_type(tt)) {
-                char *ty = parse_type_name(p);
-                Token *name = expect(p, Identifier);
-                Expr *val = NULL;
-                if (match(p, Equals)) val = parse_expr(p);
-                expect(p, Semicolon);
-                init = stmt_new_var_decl(ty, name ? name->text : "", val, 0, saved->loc);
-                free(ty);
-            } else {
-                init = stmt_new_expr(parse_expr(p), tt->loc);
-                expect(p, Semicolon);
-            }
+        if (is_var_decl_start(p)) {
+            char *ty = parse_type_name(p);
+            Token *name = expect(p, Identifier);
+            int array_size = parse_array_size_suffix(p);
+            Expr *val = NULL;
+            if (match(p, Equals)) val = parse_expr(p);
+            expect(p, Semicolon);
+            int is_ptr = (strchr(ty, '*') != NULL);
+            init = stmt_new_var_decl(ty, name ? name->text : "", val, is_ptr, array_size, tt->loc);
+            free(ty);
         } else {
             init = stmt_new_expr(parse_expr(p), tt->loc);
             expect(p, Semicolon);
@@ -541,12 +646,34 @@ static bool is_type_start(Token *t) {
            t->type == Identifier;
 }
 
+static int parse_array_size_suffix(Parser *p) {
+    if (!match(p, LBracket)) return 0;
+    Token *size = expect(p, IntLiteral);
+    expect(p, RBracket);
+    if (!size) return 0;
+    long long value = parse_int_literal_value(size->text);
+    if (value <= 0) {
+        parser_error(p, "array size must be positive");
+        return 0;
+    }
+    return (int)value;
+}
+
+static bool is_var_decl_start(Parser *p) {
+    Token *t = peek(p);
+    if (!is_type_start(t) || p->pos + 1 >= p->tokens->size)
+        return false;
+    Token *next = p->tokens->toks[p->pos + 1];
+    return next && (next->type == Identifier || next->type == Generic ||
+                    next->type == Star);
+}
+
 static void synchronize_top_level(Parser *p) {
     while (!check(p, EndOfFile)) {
         Token *t = peek(p);
         if (!t || t->type == Import || t->type == Type || t->type == Enum ||
             t->type == Struct || t->type == Interface ||
-            t->type == Extern || is_type_start(t)) {
+            t->type == Static || t->type == Extern || is_type_start(t)) {
             p->panic_mode = false;
             return;
         }
@@ -559,13 +686,14 @@ static Stmt *parse_var_decl(Parser *p) {
     Token *t = peek(p);
     char *ty = parse_type_name(p);
     Token *name = expect(p, Identifier);
+    int array_size = parse_array_size_suffix(p);
     Expr *init = NULL;
     if (match(p, Equals)) {
         init = parse_expr(p);
     }
     expect(p, Semicolon);
     int is_ptr = (strchr(ty, '*') != NULL);
-    Stmt *s = stmt_new_var_decl(ty, name ? name->text : "", init, is_ptr, t->loc);
+    Stmt *s = stmt_new_var_decl(ty, name ? name->text : "", init, is_ptr, array_size, t->loc);
     free(ty);
     return s;
 }
@@ -589,12 +717,8 @@ static Stmt *parse_statement(Parser *p) {
         default:       break;
     }
 
-    if (is_type_start(t) && p->pos + 1 < p->tokens->size) {
-        Token *next = p->tokens->toks[p->pos + 1];
-        if (next && (next->type == Identifier || next->type == Generic || next->type == Star)) {
-            return parse_var_decl(p);
-        }
-    }
+    if (is_var_decl_start(p))
+        return parse_var_decl(p);
 
     Expr *e = parse_expr(p);
     match(p, Semicolon);
@@ -610,7 +734,7 @@ static FuncParamList *parse_param_list(Parser *p, int *is_variadic) {
     do {
         if (check(p, Ellipsis)) {
             advance(p);
-            *is_variadic = 1;
+            if (is_variadic) *is_variadic = 1;
             break;
         }
         if (check(p, Self)) {
@@ -647,7 +771,8 @@ static FuncParamList *parse_param_list(Parser *p, int *is_variadic) {
     return params;
 }
 
-static Decl *parse_func_decl(Parser *p, char *ret_type, char *name, GenericParamList *generic_params, int is_extern, SourceLocation loc) {
+static Decl *parse_func_decl(Parser *p, char *ret_type, char *name, GenericParamList *generic_params,
+                             int is_static, int is_extern, SourceLocation loc) {
     expect(p, LParen);
     int is_variadic = 0;
     FuncParamList *params = parse_param_list(p, &is_variadic);
@@ -658,7 +783,8 @@ static Decl *parse_func_decl(Parser *p, char *ret_type, char *name, GenericParam
     } else {
         expect(p, Semicolon);
     }
-    return decl_new_func(ret_type, name, params, generic_params, body, NULL, is_extern, is_variadic, loc);
+    return decl_new_func(ret_type, name, params, generic_params, body, NULL,
+                         is_static, is_extern, is_variadic, loc);
 }
 
 static StructFieldList *parse_struct_fields(Parser *p) {
@@ -671,17 +797,19 @@ static StructFieldList *parse_struct_fields(Parser *p) {
         Token *t = peek(p);
         if (is_type_start(t) && p->pos + 1 < p->tokens->size) {
             Token *next = p->tokens->toks[p->pos + 1];
-            if (next && (next->type == Identifier || next->type == Generic) && !check(p, RBrace)) {
+            if (next && (next->type == Identifier || next->type == Generic ||
+                         next->type == Star) && !check(p, RBrace)) {
                 size_t saved = p->pos;
                 char *ty = parse_type_name(p);
                 Token *name = expect(p, Identifier);
+                int array_size = parse_array_size_suffix(p);
                 if (check(p, LParen)) {
                     p->pos = saved;
                     free(ty);
                     break;
                 }
                 int is_ptr = (strchr(ty, '*') != NULL);
-                StructField f = struct_field_new(ty, name ? name->text : "", is_ptr);
+                StructField f = struct_field_new(ty, name ? name->text : "", is_ptr, array_size);
                 struct_field_list_append(&fields, f);
                 free(ty);
                 expect(p, Semicolon);
@@ -712,7 +840,7 @@ static Decl *parse_struct_decl(Parser *p) {
             char *ty = parse_type_name(p);
             Token *mname = expect(p, Identifier);
             if (check(p, LParen)) {
-                Decl *method = parse_func_decl(p, ty, mname->text, NULL, 0, mt->loc);
+                Decl *method = parse_func_decl(p, ty, mname->text, NULL, 0, 0, mt->loc);
                 decl_list_append(&methods, method);
             }
             free(ty);
@@ -781,7 +909,7 @@ static Decl *parse_enum_decl(Parser *p) {
         int value = next_value;
         if (match(p, Equals)) {
             Token *lit = expect(p, IntLiteral);
-            if (lit) value = atoi(lit->text);
+            if (lit) value = (int)parse_int_literal_value(lit->text);
         }
         if (variant)
             enum_variant_list_append(&variants, enum_variant_list_new(variant->text, value));
@@ -804,11 +932,17 @@ static Decl *parse_top_level(Parser *p) {
     if (t->type == Struct)  return parse_struct_decl(p);
     if (t->type == Interface) return parse_interface_decl(p);
 
+    int is_static = 0;
     int is_extern = 0;
-    if (t->type == Extern) {
-        is_extern = 1;
+    while (t->type == Static || t->type == Extern) {
+        if (t->type == Static) is_static = 1;
+        if (t->type == Extern) is_extern = 1;
         advance(p);
         t = peek(p);
+    }
+    if (is_static && is_extern) {
+        parser_error(p, "static extern declarations are not supported");
+        return NULL;
     }
 
     if (is_type_start(t)) {
@@ -816,10 +950,29 @@ static Decl *parse_top_level(Parser *p) {
         Token *name = expect(p, Identifier);
         GenericParamList *generic_params = parse_generic_params(p);
         if (check(p, LParen)) {
-            Decl *d = parse_func_decl(p, ty, name->text, generic_params, is_extern, t->loc);
+            Decl *d = parse_func_decl(p, ty, name->text, generic_params,
+                                      is_static, is_extern, t->loc);
             free(ty);
             return d;
         }
+        int array_size = parse_array_size_suffix(p);
+        Expr *init = NULL;
+        if (match(p, Equals)) {
+            if (is_extern) {
+                parser_error(p, "extern global declarations cannot have initializers");
+                generic_param_list_free(generic_params);
+                free(ty);
+                return NULL;
+            }
+            init = parse_expr(p);
+        }
+        expect(p, Semicolon);
+        int is_ptr = (strchr(ty, '*') != NULL);
+        Decl *d = decl_new_global_var(ty, name ? name->text : "", init,
+                                      is_ptr, is_static, is_extern, array_size, t->loc);
+        generic_param_list_free(generic_params);
+        free(ty);
+        return d;
         generic_param_list_free(generic_params);
         free(ty);
         parser_error(p, "unexpected token after type name");

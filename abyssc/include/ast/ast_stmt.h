@@ -23,7 +23,7 @@ typedef struct StmtList { Stmt *stmt; struct StmtList *next; } StmtList;
 typedef struct { Expr *expr; } ExprStmt;
 typedef struct { Expr *value; } ReturnStmt;
 typedef struct { StmtList *stmts; } BlockStmt;
-typedef struct { char *type_name; char *name; Expr *init; int is_ptr; } VarDeclStmt;
+typedef struct { char *type_name; char *name; Expr *init; int is_ptr; int array_size; } VarDeclStmt;
 
 typedef struct ElifClause {
     Expr *condition;
@@ -73,7 +73,7 @@ struct Stmt {
 Stmt *stmt_new_expr(Expr *expr, SourceLocation loc);
 Stmt *stmt_new_return(Expr *value, SourceLocation loc);
 Stmt *stmt_new_block(StmtList *stmts, SourceLocation loc);
-Stmt *stmt_new_var_decl(char *type_name, char *name, Expr *init, int is_ptr, SourceLocation loc);
+Stmt *stmt_new_var_decl(char *type_name, char *name, Expr *init, int is_ptr, int array_size, SourceLocation loc);
 Stmt *stmt_new_if(Expr *condition, Stmt *then_block, ElifClause *elifs, Stmt *else_block, SourceLocation loc);
 Stmt *stmt_new_switch(Expr *expr, SwitchCase *cases, StmtList *default_stmts, SourceLocation loc);
 Stmt *stmt_new_while(Expr *condition, Stmt *body, SourceLocation loc);

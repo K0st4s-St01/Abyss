@@ -303,6 +303,15 @@ static int is_unsigned_type(const char *name) {
            strcmp(name, "u32") == 0 || strcmp(name, "u64") == 0;
 }
 
+static char *resolve_alias_type(SemanticAnalyzer *a, const char *type);
+
+static int is_condition_type(const char *name) {
+    if (!name) return 0;
+    size_t len = strlen(name);
+    return strcmp(name, "bool") == 0 || is_numeric_type(name) ||
+           (len > 0 && name[len - 1] == '*');
+}
+
 static int type_is_ptr(const char *type) {
     if (!type) return 0;
     size_t len = strlen(type);
@@ -328,6 +337,70 @@ static char *type_make_ptr(const char *type) {
     return result;
 }
 
+static char *type_make_array(const char *type, int size) {
+    if (!type || size <= 0) return NULL;
+    int digits = snprintf(NULL, 0, "%d", size);
+    size_t len = strlen(type);
+    char *result = malloc(len + (size_t)digits + 3);
+    sprintf(result, "%s[%d]", type, size);
+    return result;
+}
+
+static int type_is_array(const char *type) {
+    if (!type) return 0;
+    const char *lb = strrchr(type, '[');
+    size_t len = strlen(type);
+    return lb && len > 2 && type[len - 1] == ']';
+}
+
+static char *type_array_elem(const char *type) {
+    if (!type_is_array(type)) return NULL;
+    const char *lb = strrchr(type, '[');
+    size_t len = (size_t)(lb - type);
+    char *result = malloc(len + 1);
+    memcpy(result, type, len);
+    result[len] = '\0';
+    return result;
+}
+
+static int type_name_known(SemanticAnalyzer *a, const char *type) {
+    if (!type) return 0;
+    if (type_is_array(type)) {
+        char *elem = type_array_elem(type);
+        int known = type_name_known(a, elem);
+        free(elem);
+        return known;
+    }
+    if (type_is_ptr(type)) return 1;
+    if (strcmp(type, "void") == 0 || strcmp(type, "char") == 0 ||
+        strcmp(type, "str") == 0 || strcmp(type, "bool") == 0 ||
+        is_numeric_type(type))
+        return 1;
+    if (strcmp(type, "self") == 0 && a->current_struct_name)
+        return 1;
+    if (registry_find_struct(a->types, type))
+        return 1;
+    Symbol *sym = scope_lookup(a->scope, type);
+    if (sym && sym->type_name) {
+        sym->used = 1;
+        if (strcmp(sym->type_name, type) == 0)
+            return 1;
+        return type_name_known(a, sym->type_name);
+    }
+    return 0;
+}
+
+static int is_receiver_param(SemanticAnalyzer *a, FuncParamList *pl) {
+    if (!a || !a->current_struct_name || !pl) return 0;
+    if (!pl->param.name || strcmp(pl->param.name, "self") != 0) return 0;
+    char *resolved = resolve_alias_type(a, pl->param.type_name);
+    char *expected = type_make_ptr(a->current_struct_name);
+    int ok = resolved && expected && strcmp(resolved, expected) == 0;
+    free(resolved);
+    free(expected);
+    return ok;
+}
+
 static int types_equal(const char *a, const char *b) {
     if (!a || !b) return a == b;
     return strcmp(a, b) == 0;
@@ -340,16 +413,22 @@ static int types_compatible(const char *expected, const char *actual) {
     if (is_numeric_type(expected) && is_numeric_type(actual)) {
         if (is_float_type(expected) || is_float_type(actual))
             return 1;
-        if (is_signed_type(expected) && is_signed_type(actual))
-            return 1;
-        if (is_unsigned_type(expected) && is_unsigned_type(actual))
-            return 1;
+        return 1;
     }
 
     if (type_is_ptr(expected) && strcmp(actual, "void") == 0)
         return 1;
     if (type_is_ptr(actual) && strcmp(expected, "void") == 0)
         return 1;
+
+    if (type_is_ptr(expected) && type_is_array(actual)) {
+        char *elem = type_array_elem(actual);
+        char *elem_ptr = type_make_ptr(elem);
+        int ok = elem_ptr && types_equal(expected, elem_ptr);
+        free(elem);
+        free(elem_ptr);
+        return ok;
+    }
 
     return 0;
 }
@@ -364,6 +443,8 @@ static char *resolve_alias_type(SemanticAnalyzer *a, const char *type) {
         free(resolved_base);
         return result;
     }
+    if (strcmp(type, "self") == 0 && a->current_struct_name)
+        return strdup(a->current_struct_name);
     Symbol *sym = scope_lookup(a->scope, type);
     if (sym && sym->type_name && strcmp(sym->type_name, type) != 0)
         return strdup(sym->type_name);
@@ -376,6 +457,93 @@ static char *analyze_expr(SemanticAnalyzer *a, Expr *expr);
 static void analyze_stmt(SemanticAnalyzer *a, Stmt *stmt);
 static void analyze_stmt_list(SemanticAnalyzer *a, StmtList *list);
 static void analyze_decl(SemanticAnalyzer *a, Decl *decl);
+
+static StructField *current_struct_field(SemanticAnalyzer *a, const char *name) {
+    if (!a || !a->current_struct_name || !name) return NULL;
+    StructInfo *si = registry_find_struct(a->types, a->current_struct_name);
+    if (!si) return NULL;
+    for (StructFieldList *fl = si->fields; fl; fl = fl->next) {
+        if (strcmp(fl->field.name, name) == 0)
+            return &fl->field;
+    }
+    return NULL;
+}
+
+static char *struct_field_type_name(StructField *field) {
+    if (!field) return NULL;
+    if (field->array_size > 0)
+        return type_make_array(field->type_name, field->array_size);
+    return field->type_name ? strdup(field->type_name) : NULL;
+}
+
+static int expr_list_count(ExprList *list) {
+    int count = 0;
+    for (ExprList *el = list; el; el = el->next) count++;
+    return count;
+}
+
+static void analyze_array_initializer(SemanticAnalyzer *a, Expr *init,
+                                      const char *elem_type, int array_size,
+                                      SourceLocation loc, const char *name) {
+    if (!init || array_size <= 0) return;
+    if (init->type != EXPR_ARRAY_LIT) {
+        sem_error(a, loc, "array '%s' initializer must be an array literal", name);
+        return;
+    }
+
+    int count = expr_list_count(init->data.array_lit.elements);
+    if (count > array_size) {
+        sem_error(a, loc, "array '%s' initializer has %d elements, size is %d",
+                  name, count, array_size);
+    }
+
+    int idx = 0;
+    for (ExprList *el = init->data.array_lit.elements; el; el = el->next, idx++) {
+        char *et = analyze_expr(a, el->expr);
+        if (idx < array_size && et && elem_type && !types_compatible(elem_type, et)) {
+            sem_error(a, el->expr ? el->expr->loc : loc,
+                "array '%s' element %d: expected '%s', got '%s'",
+                name, idx, elem_type, et);
+        }
+        free(et);
+    }
+}
+
+static void analyze_struct_initializer(SemanticAnalyzer *a, Expr *init,
+                                       const char *struct_type,
+                                       SourceLocation loc, const char *name) {
+    if (!init || !struct_type) return;
+    if (init->type != EXPR_ARRAY_LIT) return;
+
+    StructInfo *si = registry_find_struct(a->types, struct_type);
+    if (!si) return;
+
+    int field_count = 0;
+    for (StructFieldList *fl = si->fields; fl; fl = fl->next) field_count++;
+    int init_count = expr_list_count(init->data.array_lit.elements);
+    if (init_count > field_count) {
+        sem_error(a, loc, "struct '%s' initializer for '%s' has %d fields, struct has %d",
+                  struct_type, name, init_count, field_count);
+    }
+
+    ExprList *el = init->data.array_lit.elements;
+    StructFieldList *fl = si->fields;
+    int idx = 0;
+    while (el && fl) {
+        char *et = analyze_expr(a, el->expr);
+        char *ft = struct_field_type_name(&fl->field);
+        if (et && ft && !types_compatible(ft, et)) {
+            sem_error(a, el->expr ? el->expr->loc : loc,
+                "struct '%s' initializer field %d '%s': expected '%s', got '%s'",
+                struct_type, idx, fl->field.name, ft, et);
+        }
+        free(et);
+        free(ft);
+        el = el->next;
+        fl = fl->next;
+        idx++;
+    }
+}
 
 /* ── Expression analysis ───────────────────────────────────── */
 
@@ -395,13 +563,27 @@ static char *analyze_expr(SemanticAnalyzer *a, Expr *expr) {
     case EXPR_STRING_LIT:
         return strdup("str");
 
+    case EXPR_BOOL_LIT:
+        return strdup("bool");
+
     case EXPR_NULL:
         return strdup("void");
+
+    case EXPR_SIZEOF:
+        if (!type_name_known(a, expr->data.sizeof_expr.type_name)) {
+            sem_error(a, expr->loc, "sizeof unknown type or value '%s'",
+                      expr->data.sizeof_expr.type_name);
+            return NULL;
+        }
+        return strdup("i64");
 
     case EXPR_IDENTIFIER: {
         const char *name = expr->data.identifier.name;
         Symbol *sym = scope_lookup(a->scope, name);
         if (!sym) {
+            StructField *field = current_struct_field(a, name);
+            if (field)
+                return struct_field_type_name(field);
             sem_error(a, expr->loc, "undeclared identifier '%s'", name);
             return NULL;
         }
@@ -515,6 +697,10 @@ static char *analyze_expr(SemanticAnalyzer *a, Expr *expr) {
             { char *result = strdup("i32"); free(lt); free(rt); return result; }
 
         case AmpersandAmpersand: case PipePipe:
+            if (!is_condition_type(lt) || !is_condition_type(rt)) {
+                sem_error(a, expr->loc, "logical operator requires bool or numeric types");
+                free(lt); free(rt); return NULL;
+            }
             { char *result = strdup("i32"); free(lt); free(rt); return result; }
 
         case Ampersand: case Caret: case Pipe:
@@ -563,15 +749,116 @@ static char *analyze_expr(SemanticAnalyzer *a, Expr *expr) {
 
     case EXPR_CALL: {
         Expr *callee = expr->data.call.callee;
+        if (callee->type == EXPR_MEMBER) {
+            char *objt = analyze_expr(a, callee->data.member.object);
+            if (!objt) return NULL;
+
+            char base[256] = {0};
+            if (type_is_ptr(objt)) {
+                char *d = type_deref(objt);
+                if (d) { strncpy(base, d, sizeof(base) - 1); free(d); }
+            } else {
+                strncpy(base, objt, sizeof(base) - 1);
+            }
+            free(objt);
+
+            char *angle = strchr(base, '<');
+            if (angle) *angle = '\0';
+
+            StructInfo *si = registry_find_struct(a->types, base);
+            if (!si) {
+                sem_error(a, expr->loc, "cannot call method on non-struct type '%s'", base);
+                return NULL;
+            }
+
+            Decl *method = NULL;
+            for (DeclList *ml = si->methods; ml; ml = ml->next) {
+                if (ml->decl && ml->decl->type == DECL_FUNC &&
+                    strcmp(ml->decl->data.func.name, callee->data.member.field) == 0) {
+                    method = ml->decl;
+                    break;
+                }
+            }
+            if (!method) {
+                sem_error(a, expr->loc, "no method '%s' in struct '%s'",
+                          callee->data.member.field, base);
+                return NULL;
+            }
+
+            char full_name[256];
+            snprintf(full_name, sizeof(full_name), "%s.%s", base, callee->data.member.field);
+            Symbol *msym = scope_lookup(a->scope, full_name);
+
+            FuncParamList *params = method->data.func.params;
+            int has_explicit_receiver = params && params->param.name &&
+                strcmp(params->param.name, "self") == 0;
+            int param_count = 0;
+            for (FuncParamList *pl = has_explicit_receiver ? params->next : params;
+                 pl; pl = pl->next)
+                param_count++;
+
+            int argc = 0;
+            for (ExprList *al = expr->data.call.args; al; al = al->next) argc++;
+
+            if (argc != param_count && !method->data.func.is_variadic) {
+                sem_error(a, expr->loc,
+                    "method '%s' expects %d arguments, got %d",
+                    full_name, param_count, argc);
+            } else {
+                ExprList *al = expr->data.call.args;
+                FuncParamList *pl = has_explicit_receiver ? params->next : params;
+                int idx = 0;
+                while (al && pl) {
+                    char *at = analyze_expr(a, al->expr);
+                    char *expected = resolve_alias_type(a, pl->param.type_name);
+                    if (at && expected && !types_compatible(expected, at)) {
+                        sem_error(a, expr->loc,
+                            "argument %d of '%s': expected '%s', got '%s'",
+                            idx + 1, full_name, expected, at);
+                    }
+                    free(expected);
+                    free(at);
+                    al = al->next;
+                    pl = pl->next;
+                    idx++;
+                }
+            }
+
+            if (msym && msym->type_name)
+                return strdup(msym->type_name);
+            return method->data.func.return_type ? strdup(method->data.func.return_type) : NULL;
+        }
+
         if (callee->type != EXPR_IDENTIFIER) {
             sem_error(a, expr->loc, "invalid call target");
             return NULL;
         }
         const char *fname = callee->data.identifier.name;
         Symbol *fsym = scope_lookup(a->scope, fname);
+        int implicit_method_call = 0;
+        Decl *implicit_method = NULL;
+        char method_name[256];
         if (!fsym) {
-            sem_error(a, expr->loc, "undeclared function '%s'", fname);
-            return NULL;
+            if (a->current_struct_name) {
+                snprintf(method_name, sizeof(method_name), "%s.%s",
+                         a->current_struct_name, fname);
+                fsym = scope_lookup(a->scope, method_name);
+                StructInfo *si = registry_find_struct(a->types, a->current_struct_name);
+                if (si) {
+                    for (DeclList *ml = si->methods; ml; ml = ml->next) {
+                        if (ml->decl && ml->decl->type == DECL_FUNC &&
+                            strcmp(ml->decl->data.func.name, fname) == 0) {
+                            implicit_method = ml->decl;
+                            break;
+                        }
+                    }
+                }
+                implicit_method_call = fsym && implicit_method;
+            }
+            if (!fsym) {
+                sem_error(a, expr->loc, "undeclared function '%s'", fname);
+                return NULL;
+            }
         }
         if (!fsym->is_func) {
             sem_error(a, expr->loc, "'%s' is not a function", fname);
@@ -581,30 +868,35 @@ static char *analyze_expr(SemanticAnalyzer *a, Expr *expr) {
         int argc = 0;
         for (ExprList *al = expr->data.call.args; al; al = al->next) argc++;
 
-        if (fsym->params) {
-            int param_count = 0;
-            for (FuncParamList *pl = fsym->params; pl; pl = pl->next) param_count++;
+        FuncParamList *params = fsym->params;
+        if (implicit_method_call && params && params->param.name &&
+            strcmp(params->param.name, "self") == 0)
+            params = params->next;
 
-            if (argc != param_count && !fsym->is_variadic) {
-                sem_error(a, expr->loc,
-                    "function '%s' expects %d arguments, got %d",
-                    fname, param_count, argc);
-            } else {
-                ExprList *al = expr->data.call.args;
-                FuncParamList *pl = fsym->params;
-                int idx = 0;
-                while (al && pl) {
-                    char *at = analyze_expr(a, al->expr);
-                    if (at && !types_compatible(pl->param.type_name, at)) {
-                        sem_error(a, expr->loc,
-                            "argument %d of '%s': expected '%s', got '%s'",
-                            idx + 1, fname, pl->param.type_name, at);
-                    }
-                    free(at);
-                    al = al->next;
-                    pl = pl->next;
-                    idx++;
+        int param_count = 0;
+        for (FuncParamList *pl = params; pl; pl = pl->next) param_count++;
+
+        if (argc != param_count && !fsym->is_variadic) {
+            sem_error(a, expr->loc,
+                "function '%s' expects %d arguments, got %d",
+                implicit_method_call ? method_name : fname, param_count, argc);
+        } else {
+            ExprList *al = expr->data.call.args;
+            FuncParamList *pl = params;
+            int idx = 0;
+            while (al && pl) {
+                char *at = analyze_expr(a, al->expr);
+                char *expected = resolve_alias_type(a, pl->param.type_name);
+                if (at && expected && !types_compatible(expected, at)) {
+                    sem_error(a, expr->loc,
+                        "argument %d of '%s': expected '%s', got '%s'",
+                        idx + 1, implicit_method_call ? method_name : fname, expected, at);
                 }
+                free(expected);
+                free(at);
+                al = al->next;
+                pl = pl->next;
+                idx++;
             }
         }
 
@@ -641,7 +933,7 @@ static char *analyze_expr(SemanticAnalyzer *a, Expr *expr) {
 
         for (StructFieldList *fl = si->fields; fl; fl = fl->next) {
             if (strcmp(fl->field.name, field) == 0)
-                return strdup(fl->field.type_name);
+                return struct_field_type_name(&fl->field);
         }
 
         for (DeclList *ml = si->methods; ml; ml = ml->next) {
@@ -682,6 +974,21 @@ static char *analyze_expr(SemanticAnalyzer *a, Expr *expr) {
     case EXPR_ASSIGN: {
         Symbol *sym = scope_lookup(a->scope, expr->data.assign.name);
         if (!sym) {
+            StructField *field = current_struct_field(a, expr->data.assign.name);
+            if (field) {
+                char *vt = analyze_expr(a, expr->data.assign.value);
+                if (!vt) return NULL;
+                char *field_type = struct_field_type_name(field);
+                if (!types_compatible(field_type, vt)) {
+                    sem_error(a, expr->loc, "type mismatch in assignment to field '%s': '%s' = '%s'",
+                              expr->data.assign.name, field_type, vt);
+                    free(field_type); free(vt); return NULL;
+                }
+                char *result = field_type ? strdup(field_type) : NULL;
+                free(field_type);
+                free(vt);
+                return result;
+            }
             sem_error(a, expr->loc, "undeclared variable '%s' in assignment",
                       expr->data.assign.name);
             return NULL;
@@ -702,6 +1009,9 @@ static char *analyze_expr(SemanticAnalyzer *a, Expr *expr) {
         char *it = analyze_expr(a, expr->data.index.index);
         free(it);
         if (!at) return NULL;
+        if (type_is_array(at)) {
+            char *result = type_array_elem(at); free(at); return result;
+        }
         if (type_is_ptr(at)) {
             char *result = type_deref(at); free(at); return result;
         }
@@ -723,6 +1033,34 @@ static char *analyze_expr(SemanticAnalyzer *a, Expr *expr) {
         char *et = analyze_expr(a, expr->data.delete_expr.operand);
         free(et);
         return NULL;
+    }
+
+    case EXPR_ARRAY_LIT:
+        for (ExprList *el = expr->data.array_lit.elements; el; el = el->next) {
+            char *et = analyze_expr(a, el->expr);
+            free(et);
+        }
+        return strdup("array");
+
+    case EXPR_CONDITIONAL: {
+        char *ct = analyze_expr(a, expr->data.conditional.condition);
+        if (ct && !is_condition_type(ct)) {
+            sem_error(a, expr->data.conditional.condition->loc,
+                      "conditional expression condition must be bool or numeric, got '%s'", ct);
+        }
+        char *tt = analyze_expr(a, expr->data.conditional.then_expr);
+        char *et = analyze_expr(a, expr->data.conditional.else_expr);
+        free(ct);
+        if (!tt || !et) { free(tt); free(et); return NULL; }
+        if (!types_compatible(tt, et) && !types_compatible(et, tt)) {
+            sem_error(a, expr->loc,
+                      "conditional branches have incompatible types '%s' and '%s'", tt, et);
+            free(tt); free(et); return NULL;
+        }
+        char *result = strdup(tt);
+        free(tt);
+        free(et);
+        return result;
     }
     }
 
@@ -778,30 +1116,49 @@ static void analyze_stmt(SemanticAnalyzer *a, Stmt *stmt) {
     case STMT_VAR_DECL: {
         const char *name = stmt->data.var_decl.name;
         const char *ty = stmt->data.var_decl.type_name;
+        char *resolved_ty = resolve_alias_type(a, ty);
+        const char *effective_ty = resolved_ty ? resolved_ty : ty;
 
         if (scope_lookup_current(a->scope, name)) {
             sem_error(a, stmt->loc, "redeclaration of '%s'", name);
+            free(resolved_ty);
             break;
         }
 
-        if (stmt->data.var_decl.init) {
+        char *decl_ty = NULL;
+        if (stmt->data.var_decl.array_size > 0) {
+            decl_ty = type_make_array(effective_ty, stmt->data.var_decl.array_size);
+            if (stmt->data.var_decl.init)
+                analyze_array_initializer(a, stmt->data.var_decl.init, effective_ty,
+                                          stmt->data.var_decl.array_size, stmt->loc, name);
+        }
+        const char *stored_ty = decl_ty ? decl_ty : effective_ty;
+
+        if (stmt->data.var_decl.init && stmt->data.var_decl.array_size == 0 &&
+            registry_find_struct(a->types, effective_ty) &&
+            stmt->data.var_decl.init->type == EXPR_ARRAY_LIT) {
+            analyze_struct_initializer(a, stmt->data.var_decl.init, effective_ty,
+                                       stmt->loc, name);
+        } else if (stmt->data.var_decl.init && stmt->data.var_decl.array_size == 0) {
             char *it = analyze_expr(a, stmt->data.var_decl.init);
-            if (it && ty && !types_compatible(ty, it)) {
+            if (it && effective_ty && !types_compatible(effective_ty, it)) {
                 sem_error(a, stmt->loc,
                     "type mismatch in initialization of '%s': expected '%s', got '%s'",
-                    name, ty, it);
+                    name, effective_ty, it);
             }
             free(it);
         }
 
-        scope_insert(a->scope, name, ty, stmt->data.var_decl.is_ptr, 0, 0, NULL, stmt->loc);
+        scope_insert(a->scope, name, stored_ty, stmt->data.var_decl.is_ptr, 0, 0, NULL, stmt->loc);
+        free(decl_ty);
+        free(resolved_ty);
         break;
     }
 
     case STMT_IF:
         if (stmt->data.if_stmt.condition) {
             char *ct = analyze_expr(a, stmt->data.if_stmt.condition);
-            if (ct && !types_equal(ct, "bool") && !is_numeric_type(ct)) {
+            if (ct && !is_condition_type(ct)) {
                 sem_error(a, stmt->loc, "if condition must be bool or numeric, got '%s'", ct);
             }
             free(ct);
@@ -810,7 +1167,7 @@ static void analyze_stmt(SemanticAnalyzer *a, Stmt *stmt) {
         for (ElifClause *ec = stmt->data.if_stmt.elifs; ec; ec = ec->next) {
             if (ec->condition) {
                 char *ct = analyze_expr(a, ec->condition);
-                if (ct && !types_equal(ct, "bool") && !is_numeric_type(ct)) {
+                if (ct && !is_condition_type(ct)) {
                     sem_error(a, ec->condition->loc, "elif condition must be bool or numeric, got '%s'", ct);
                 }
                 free(ct);
@@ -846,6 +1203,9 @@ static void analyze_stmt(SemanticAnalyzer *a, Stmt *stmt) {
     case STMT_WHILE:
         if (stmt->data.while_stmt.condition) {
             char *ct = analyze_expr(a, stmt->data.while_stmt.condition);
+            if (ct && !is_condition_type(ct)) {
+                sem_error(a, stmt->loc, "while condition must be bool or numeric, got '%s'", ct);
+            }
             free(ct);
         }
         a->loop_depth++;
@@ -862,6 +1222,10 @@ static void analyze_stmt(SemanticAnalyzer *a, Stmt *stmt) {
 
         if (stmt->data.for_stmt.condition) {
             char *ct = analyze_expr(a, stmt->data.for_stmt.condition);
+            if (ct && !is_condition_type(ct)) {
+                sem_error(a, stmt->data.for_stmt.condition->loc,
+                          "for condition must be bool or numeric, got '%s'", ct);
+            }
             free(ct);
         }
 
@@ -884,6 +1248,10 @@ static void analyze_stmt(SemanticAnalyzer *a, Stmt *stmt) {
         a->loop_depth--;
         if (stmt->data.do_while_stmt.condition) {
             char *ct = analyze_expr(a, stmt->data.do_while_stmt.condition);
+            if (ct && !is_condition_type(ct)) {
+                sem_error(a, stmt->data.do_while_stmt.condition->loc,
+                          "do while condition must be bool or numeric, got '%s'", ct);
+            }
             free(ct);
         }
         break;
@@ -922,14 +1290,24 @@ static void check_unused_vars(SemanticAnalyzer *a, SemScope *scope) {
 
 static void analyze_func_decl(SemanticAnalyzer *a, Decl *decl) {
     FuncDecl *f = &decl->data.func;
+    char scoped_name[256];
+    const char *symbol_name = f->name;
+    if (a->current_struct_name) {
+        snprintf(scoped_name, sizeof(scoped_name), "%s.%s", a->current_struct_name, f->name);
+        symbol_name = scoped_name;
+    }
 
-    Symbol *existing = scope_lookup_current(a->scope, f->name);
-    if (existing) {
-        sem_error(a, decl->loc, "redeclaration of function '%s'", f->name);
+    Symbol *existing = scope_lookup_current(a->scope, symbol_name);
+    if (existing && !existing->is_func) {
+        sem_error(a, decl->loc, "redeclaration of function '%s'", symbol_name);
         return;
     }
 
-    scope_insert(a->scope, f->name, f->return_type, 0, 1, f->is_variadic, f->params, decl->loc);
+    char *resolved_return = resolve_alias_type(a, f->return_type);
+    if (!existing) {
+        scope_insert(a->scope, symbol_name, resolved_return ? resolved_return : f->return_type,
+                     0, 1, f->is_variadic, f->params, decl->loc);
+    }
 
     if (f->body) {
         SemScope *func_scope = scope_new(a->scope);
@@ -939,15 +1317,28 @@ static void analyze_func_decl(SemanticAnalyzer *a, Decl *decl) {
         char *prev_func_name = a->current_func_name;
         char *prev_func_return = a->current_func_return;
         a->current_func_name = strdup(f->name);
-        a->current_func_return = f->return_type ? strdup(f->return_type) : NULL;
+        a->current_func_return = resolved_return ? strdup(resolved_return) :
+            (f->return_type ? strdup(f->return_type) : NULL);
+
+        int has_explicit_receiver = is_receiver_param(a, f->params);
+        if (a->current_struct_name && !has_explicit_receiver) {
+            char *self_ty = type_make_ptr(a->current_struct_name);
+            scope_insert(a->scope, "self", self_ty, 1, 0, 0, NULL, decl->loc);
+            free(self_ty);
+            Symbol *self_sym = scope_lookup_current(a->scope, "self");
+            if (self_sym) self_sym->used = 1;
+        }
 
         for (FuncParamList *pl = f->params; pl; pl = pl->next) {
             if (scope_lookup_current(a->scope, pl->param.name)) {
                 sem_error(a, decl->loc, "redeclaration of parameter '%s'",
                           pl->param.name);
             } else {
-                scope_insert(a->scope, pl->param.name, pl->param.type_name,
+                char *resolved_param = resolve_alias_type(a, pl->param.type_name);
+                scope_insert(a->scope, pl->param.name,
+                             resolved_param ? resolved_param : pl->param.type_name,
                              pl->param.is_ptr, 0, 0, NULL, decl->loc);
+                free(resolved_param);
                 Symbol *psym = scope_lookup_current(a->scope, pl->param.name);
                 if (psym) psym->used = 1;
             }
@@ -965,6 +1356,92 @@ static void analyze_func_decl(SemanticAnalyzer *a, Decl *decl) {
         a->scope = prev_scope;
         scope_free(func_scope);
     }
+    free(resolved_return);
+}
+
+static int is_global_const_expr(Expr *expr) {
+    if (!expr) return 1;
+    switch (expr->type) {
+    case EXPR_INT_LIT:
+    case EXPR_FLOAT_LIT:
+    case EXPR_CHAR_LIT:
+    case EXPR_STRING_LIT:
+    case EXPR_BOOL_LIT:
+    case EXPR_NULL:
+    case EXPR_IDENTIFIER:
+    case EXPR_SIZEOF:
+        return 1;
+    case EXPR_UNARY:
+        return expr->data.unary.op == Minus &&
+               is_global_const_expr(expr->data.unary.operand);
+    case EXPR_ARRAY_LIT:
+        for (ExprList *el = expr->data.array_lit.elements; el; el = el->next) {
+            if (!is_global_const_expr(el->expr))
+                return 0;
+        }
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static void declare_global_var_decl(SemanticAnalyzer *a, Decl *decl) {
+    GlobalVarDecl *g = &decl->data.global_var;
+    if (scope_lookup_current(a->scope, g->name)) {
+        sem_error(a, decl->loc, "redeclaration of global variable '%s'", g->name);
+        return;
+    }
+
+    char *resolved_type = resolve_alias_type(a, g->type_name);
+    const char *effective = resolved_type ? resolved_type : g->type_name;
+    char *decl_ty = g->array_size > 0 ? type_make_array(effective, g->array_size) : NULL;
+    scope_insert(a->scope, g->name, decl_ty ? decl_ty : effective,
+                 g->is_ptr, 0, 0, NULL, decl->loc);
+    free(decl_ty);
+    free(resolved_type);
+}
+
+static void analyze_global_var_decl(SemanticAnalyzer *a, Decl *decl) {
+    GlobalVarDecl *g = &decl->data.global_var;
+    if (!is_global_const_expr(g->init)) {
+        sem_error(a, decl->loc, "global variable '%s' requires a constant initializer", g->name);
+        return;
+    }
+
+    if (g->array_size > 0 && g->init) {
+        char *expected = resolve_alias_type(a, g->type_name);
+        const char *effective = expected ? expected : g->type_name;
+        analyze_array_initializer(a, g->init, effective, g->array_size, decl->loc, g->name);
+        free(expected);
+        return;
+    }
+
+    if (g->init) {
+        char *it = analyze_expr(a, g->init);
+        char *expected = resolve_alias_type(a, g->type_name);
+        const char *effective = expected ? expected : g->type_name;
+        if (it && effective && !types_compatible(effective, it)) {
+            sem_error(a, decl->loc,
+                "type mismatch in initialization of global '%s': expected '%s', got '%s'",
+                g->name, effective, it);
+        }
+        free(expected);
+        free(it);
+    }
+}
+
+static void declare_func_decl(SemanticAnalyzer *a, Decl *decl) {
+    FuncDecl *f = &decl->data.func;
+
+    if (scope_lookup_current(a->scope, f->name)) {
+        sem_error(a, decl->loc, "redeclaration of function '%s'", f->name);
+        return;
+    }
+
+    char *resolved_return = resolve_alias_type(a, f->return_type);
+    scope_insert(a->scope, f->name, resolved_return ? resolved_return : f->return_type,
+                 0, 1, f->is_variadic, f->params, decl->loc);
+    free(resolved_return);
 }
 
 static void analyze_struct_decl(SemanticAnalyzer *a, Decl *decl) {
@@ -1061,6 +1538,9 @@ static void analyze_decl(SemanticAnalyzer *a, Decl *decl) {
     case DECL_FUNC:
         analyze_func_decl(a, decl);
         break;
+    case DECL_GLOBAL_VAR:
+        analyze_global_var_decl(a, decl);
+        break;
     case DECL_STRUCT:
         analyze_struct_decl(a, decl);
         break;
@@ -1086,6 +1566,26 @@ bool semantic_analyze(SemanticAnalyzer *a, Program *program) {
     if (!program) return true;
 
     for (DeclList *dl = program->decls; dl; dl = dl->next) {
+        if (!dl->decl) continue;
+        if (dl->decl->type == DECL_TYPE_ALIAS ||
+            dl->decl->type == DECL_ENUM)
+            analyze_decl(a, dl->decl);
+    }
+
+    for (DeclList *dl = program->decls; dl; dl = dl->next) {
+        if (dl->decl && dl->decl->type == DECL_FUNC)
+            declare_func_decl(a, dl->decl);
+    }
+
+    for (DeclList *dl = program->decls; dl; dl = dl->next) {
+        if (dl->decl && dl->decl->type == DECL_GLOBAL_VAR)
+            declare_global_var_decl(a, dl->decl);
+    }
+
+    for (DeclList *dl = program->decls; dl; dl = dl->next) {
+        if (dl->decl && (dl->decl->type == DECL_TYPE_ALIAS ||
+                         dl->decl->type == DECL_ENUM))
+            continue;
         analyze_decl(a, dl->decl);
     }
 

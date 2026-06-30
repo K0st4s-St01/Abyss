@@ -7,6 +7,7 @@ typedef enum {
     DECL_FUNC,
     DECL_STRUCT,
     DECL_STRUCT_FIELD,
+    DECL_GLOBAL_VAR,
     DECL_TYPE_ALIAS,
     DECL_ENUM,
     DECL_INTERFACE,
@@ -51,6 +52,7 @@ typedef struct {
     GenericParamList *generic_params;
     Stmt *body;
     DecoratorList *decorators;
+    int is_static;
     int is_extern;
     int is_variadic;
 } FuncDecl;
@@ -58,7 +60,18 @@ typedef struct {
 typedef struct {
     char *type_name;
     char *name;
+    Expr *init;
     int is_ptr;
+    int is_static;
+    int is_extern;
+    int array_size;
+} GlobalVarDecl;
+
+typedef struct {
+    char *type_name;
+    char *name;
+    int is_ptr;
+    int array_size;
 } StructField;
 
 typedef struct StructFieldList {
@@ -120,6 +133,7 @@ struct Decl {
     SourceLocation loc;
     union {
         FuncDecl func;
+        GlobalVarDecl global_var;
         StructDecl struct_decl;
         TypeAliasDecl type_alias;
         EnumDecl enum_decl;
@@ -156,7 +170,7 @@ FuncParamList *func_param_list_new(void);
 void func_param_list_append(FuncParamList **list, FuncParam param);
 void func_param_list_free(FuncParamList *list);
 
-StructField struct_field_new(char *type_name, char *name, int is_ptr);
+StructField struct_field_new(char *type_name, char *name, int is_ptr, int array_size);
 StructFieldList *struct_field_list_new(void);
 void struct_field_list_append(StructFieldList **list, StructField field);
 void struct_field_list_free(StructFieldList *list);
@@ -172,7 +186,8 @@ GenericParamList *generic_param_list_new(void);
 void generic_param_list_append(GenericParamList **list, GenericParam param);
 void generic_param_list_free(GenericParamList *list);
 
-Decl *decl_new_func(char *return_type, char *name, FuncParamList *params, GenericParamList *generic_params, Stmt *body, DecoratorList *decorators, int is_extern, int is_variadic, SourceLocation loc);
+Decl *decl_new_func(char *return_type, char *name, FuncParamList *params, GenericParamList *generic_params, Stmt *body, DecoratorList *decorators, int is_static, int is_extern, int is_variadic, SourceLocation loc);
+Decl *decl_new_global_var(char *type_name, char *name, Expr *init, int is_ptr, int is_static, int is_extern, int array_size, SourceLocation loc);
 Decl *decl_new_struct(char *name, StructFieldList *fields, GenericParamList *generic_params, DeclList *methods, DecoratorList *decorators, SourceLocation loc);
 Decl *decl_new_type_alias(char *name, char *target_type, SourceLocation loc);
 Decl *decl_new_enum(char *name, EnumVariantList *variants, SourceLocation loc);

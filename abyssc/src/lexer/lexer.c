@@ -47,22 +47,44 @@ bool lexer_match(Lexer *lexer,char to_match){
    }
    
 void lexer_skip_whitespace_and_comments(Lexer *lexer){
-	char c = lexer_peek(lexer,0);
- 	while(c == ' ' || c == '\t' || c == '\r' || c=='\n'){
-    	lexer_advance(lexer);
-  		c = lexer_peek(lexer,0);
-   	}
-    while(c == '#'){
-    	lexer_advance(lexer);
-      	c = lexer_peek(lexer,0);
-       	while(c != '\n' && c != '\0'){
-        	lexer_advance(lexer);
-        	c = lexer_peek(lexer,0);
-        }
-        while(c == ' ' || c == '\t' || c == '\r' || c == '\n'){
+    for (;;) {
+	    char c = lexer_peek(lexer,0);
+        while(c == ' ' || c == '\t' || c == '\r' || c=='\n'){
             lexer_advance(lexer);
             c = lexer_peek(lexer,0);
         }
+
+        if (c == '#') {
+            while(c != '\n' && c != '\0'){
+                lexer_advance(lexer);
+                c = lexer_peek(lexer,0);
+            }
+            continue;
+        }
+
+        if (c == '/' && lexer_peek(lexer, 1) == '/') {
+            while(c != '\n' && c != '\0'){
+                lexer_advance(lexer);
+                c = lexer_peek(lexer,0);
+            }
+            continue;
+        }
+
+        if (c == '/' && lexer_peek(lexer, 1) == '*') {
+            lexer_advance(lexer);
+            lexer_advance(lexer);
+            while (lexer_peek(lexer, 0) != '\0') {
+                if (lexer_peek(lexer, 0) == '*' && lexer_peek(lexer, 1) == '/') {
+                    lexer_advance(lexer);
+                    lexer_advance(lexer);
+                    break;
+                }
+                lexer_advance(lexer);
+            }
+            continue;
+        }
+
+        break;
     }
 }
 SourceLocation lexer_current_location(Lexer *lexer){
@@ -129,6 +151,7 @@ Token *lexer_next_token(Lexer *lexer){
             }
             { Token *t = lexer_make_punctuation(lexer); lexer->prev_token_type = t->type; return t; }
         case ':':
+        case '?':
         case '@':
         case '(':
         case ')':
@@ -148,7 +171,7 @@ Token *lexer_next_token(Lexer *lexer){
  	
 }
 
-static char* keywords[23] = {
+static char* keywords[26] = {
   "if"
   ,"else"
   ,"elif"
@@ -172,6 +195,9 @@ static char* keywords[23] = {
   ,"new"
   ,"delete"
   ,"null"
+  ,"true"
+  ,"false"
+  ,"sizeof"
 };
 
 static char* primitives[13] ={
@@ -202,8 +228,8 @@ Token *lexer_make_identifier_or_keyword(Lexer *lexer){
     }
     char* current_word = string_builder_to_string(sb);
     string_builder_free(sb);
-  	for(int i =0;i<23;i++){
-   		if(i < 23 && strcmp(current_word,keywords[i]) == 0){
+  	for(int i =0;i<26;i++){
+   		if(i < 26 && strcmp(current_word,keywords[i]) == 0){
      		Token *tok = token_new(lexer_current_location(lexer),current_word,i + 20);
   			free(current_word);
   			return tok;
@@ -227,6 +253,10 @@ static Token* lex_char_literal(Lexer *lexer){
  	while(lexer_peek(lexer,0) != '\'' && lexer_peek(lexer,0) != '\0'){
   		c = lexer_advance(lexer);
     	string_builder_add(sb,c);
+        if (c == '\\' && lexer_peek(lexer,0) != '\0') {
+            c = lexer_advance(lexer);
+            string_builder_add(sb,c);
+        }
    	}
     if(lexer_peek(lexer,0) == '\''){
         c =lexer_advance(lexer);
@@ -274,14 +304,31 @@ static Token* lex_number_literal(Lexer *lexer){
  	StringBuilder *sb = string_builder_new();
   	TokenType tt = IntLiteral;
  	string_builder_add(sb,c);
-  	while(isdigit(lexer_peek(lexer,0))){
+
+    if (c == '0' && (lexer_peek(lexer,0) == 'x' || lexer_peek(lexer,0) == 'X' ||
+                     lexer_peek(lexer,0) == 'b' || lexer_peek(lexer,0) == 'B' ||
+                     lexer_peek(lexer,0) == 'o' || lexer_peek(lexer,0) == 'O')) {
+        c = lexer_advance(lexer);
+        string_builder_add(sb,c);
+        while(isalnum(lexer_peek(lexer,0)) || lexer_peek(lexer,0) == '_'){
+            c = lexer_advance(lexer);
+            string_builder_add(sb,c);
+        }
+        char* current_word = string_builder_to_string(sb);
+        string_builder_free(sb);
+        Token *tok = token_new(lexer_current_location(lexer),current_word,tt);
+        free(current_word);
+        return tok;
+    }
+
+  	while(isdigit(lexer_peek(lexer,0)) || lexer_peek(lexer,0) == '_'){
    		c = lexer_advance(lexer);
      	string_builder_add(sb,c);
     }
     if(lexer_peek(lexer,0) == '.'){
     	c = lexer_advance(lexer);
      	string_builder_add(sb,c);
-       	while(isdigit(lexer_peek(lexer,0))){
+       	while(isdigit(lexer_peek(lexer,0)) || lexer_peek(lexer,0) == '_'){
 	   		c = lexer_advance(lexer);
 	     	string_builder_add(sb,c);
 	    }
@@ -310,6 +357,7 @@ Token *lexer_make_punctuation(Lexer *lexer){
 		case ',':return token_new(lexer_current_location(lexer),",",Comma);
   		case ';':return token_new(lexer_current_location(lexer),";",Semicolon);
 		case '.':return token_new(lexer_current_location(lexer),".",Dot);
+		case '?':return token_new(lexer_current_location(lexer),"?",Question);
 		case ':':
   			if(lexer_match(lexer,':')){
   				return token_new(lexer_current_location(lexer),"::",Scope);

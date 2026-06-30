@@ -49,6 +49,9 @@ typedef enum{
   ,New
   ,Delete
   ,Null
+  ,True
+  ,False
+  ,Sizeof
   //operator
   ,Generic       // <>
   ,Arrow
@@ -88,6 +91,7 @@ typedef enum{
   ,Semicolon
   ,Dot
   ,Ellipsis
+  ,Question
   ,Scope
   ,At
   ,LParen

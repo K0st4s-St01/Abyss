@@ -9,6 +9,7 @@ typedef enum {
     EXPR_FLOAT_LIT,
     EXPR_CHAR_LIT,
     EXPR_STRING_LIT,
+    EXPR_BOOL_LIT,
     EXPR_IDENTIFIER,
     EXPR_BINARY,
     EXPR_UNARY,
@@ -22,6 +23,9 @@ typedef enum {
     EXPR_NEW,
     EXPR_DELETE,
     EXPR_NULL,
+    EXPR_SIZEOF,
+    EXPR_ARRAY_LIT,
+    EXPR_CONDITIONAL,
 } ExprType;
 
 typedef struct Expr Expr;
@@ -31,6 +35,7 @@ typedef struct { char *value; } IntLitExpr;
 typedef struct { char *value; } FloatLitExpr;
 typedef struct { char *value; } CharLitExpr;
 typedef struct { char *value; } StringLitExpr;
+typedef struct { int value; } BoolLitExpr;
 typedef struct { char *name; } IdentifierExpr;
 typedef struct { Expr *left; TokenType op; Expr *right; } BinaryExpr;
 typedef struct { TokenType op; Expr *operand; } UnaryExpr;
@@ -43,6 +48,9 @@ typedef struct { char *type_name; Expr *operand; } CastExpr;
 typedef struct { char *name; Expr *value; } AssignExpr;
 typedef struct { char *type_name; ExprList *dims; } NewExpr;
 typedef struct { Expr *operand; int dim_count; } DeleteExpr;
+typedef struct { char *type_name; } SizeofExpr;
+typedef struct { ExprList *elements; } ArrayLitExpr;
+typedef struct { Expr *condition; Expr *then_expr; Expr *else_expr; } ConditionalExpr;
 
 struct Expr {
     ExprType type;
@@ -52,6 +60,7 @@ struct Expr {
         FloatLitExpr float_lit;
         CharLitExpr char_lit;
         StringLitExpr string_lit;
+        BoolLitExpr bool_lit;
         IdentifierExpr identifier;
         BinaryExpr binary;
         UnaryExpr unary;
@@ -64,6 +73,9 @@ struct Expr {
         AssignExpr assign;
         NewExpr new_expr;
         DeleteExpr delete_expr;
+        SizeofExpr sizeof_expr;
+        ArrayLitExpr array_lit;
+        ConditionalExpr conditional;
     } data;
 };
 
@@ -71,6 +83,7 @@ Expr *expr_new_int(char *value, SourceLocation loc);
 Expr *expr_new_float(char *value, SourceLocation loc);
 Expr *expr_new_char(char *value, SourceLocation loc);
 Expr *expr_new_string(char *value, SourceLocation loc);
+Expr *expr_new_bool(int value, SourceLocation loc);
 Expr *expr_new_identifier(char *name, SourceLocation loc);
 Expr *expr_new_binary(Expr *left, TokenType op, Expr *right, SourceLocation loc);
 Expr *expr_new_unary(TokenType op, Expr *operand, SourceLocation loc);
@@ -84,6 +97,9 @@ Expr *expr_new_assign(char *name, Expr *value, SourceLocation loc);
 Expr *expr_new_new(char *type_name, ExprList *dims, SourceLocation loc);
 Expr *expr_new_delete(Expr *operand, int dim_count, SourceLocation loc);
 Expr *expr_new_null(SourceLocation loc);
+Expr *expr_new_sizeof(char *type_name, SourceLocation loc);
+Expr *expr_new_array_lit(ExprList *elements, SourceLocation loc);
+Expr *expr_new_conditional(Expr *condition, Expr *then_expr, Expr *else_expr, SourceLocation loc);
 void expr_free(Expr *expr);
 ExprList *expr_list_new(void);
 void expr_list_append(ExprList **list, Expr *expr);

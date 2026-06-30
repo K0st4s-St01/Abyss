@@ -44,6 +44,14 @@ Expr *expr_new_string(char *value, SourceLocation loc) {
     return e;
 }
 
+Expr *expr_new_bool(int value, SourceLocation loc) {
+    Expr *e = malloc(sizeof(Expr));
+    e->type = EXPR_BOOL_LIT;
+    e->loc = loc;
+    e->data.bool_lit.value = value ? 1 : 0;
+    return e;
+}
+
 Expr *expr_new_identifier(char *name, SourceLocation loc) {
     Expr *e = malloc(sizeof(Expr));
     e->type = EXPR_IDENTIFIER;
@@ -157,6 +165,32 @@ Expr *expr_new_null(SourceLocation loc) {
     return e;
 }
 
+Expr *expr_new_sizeof(char *type_name, SourceLocation loc) {
+    Expr *e = malloc(sizeof(Expr));
+    e->type = EXPR_SIZEOF;
+    e->loc = loc;
+    e->data.sizeof_expr.type_name = str_dup(type_name);
+    return e;
+}
+
+Expr *expr_new_array_lit(ExprList *elements, SourceLocation loc) {
+    Expr *e = malloc(sizeof(Expr));
+    e->type = EXPR_ARRAY_LIT;
+    e->loc = loc;
+    e->data.array_lit.elements = elements;
+    return e;
+}
+
+Expr *expr_new_conditional(Expr *condition, Expr *then_expr, Expr *else_expr, SourceLocation loc) {
+    Expr *e = malloc(sizeof(Expr));
+    e->type = EXPR_CONDITIONAL;
+    e->loc = loc;
+    e->data.conditional.condition = condition;
+    e->data.conditional.then_expr = then_expr;
+    e->data.conditional.else_expr = else_expr;
+    return e;
+}
+
 void expr_free(Expr *expr) {
     if (!expr) return;
     switch (expr->type) {
@@ -164,6 +198,7 @@ void expr_free(Expr *expr) {
         case EXPR_FLOAT_LIT:  free(expr->data.float_lit.value); break;
         case EXPR_CHAR_LIT:   free(expr->data.char_lit.value); break;
         case EXPR_STRING_LIT: free(expr->data.string_lit.value); break;
+        case EXPR_BOOL_LIT:   break;
         case EXPR_IDENTIFIER: free(expr->data.identifier.name); break;
         case EXPR_BINARY:
             expr_free(expr->data.binary.left);
@@ -206,6 +241,17 @@ void expr_free(Expr *expr) {
             expr_free(expr->data.delete_expr.operand);
             break;
         case EXPR_NULL:
+            break;
+        case EXPR_SIZEOF:
+            free(expr->data.sizeof_expr.type_name);
+            break;
+        case EXPR_ARRAY_LIT:
+            expr_list_free(expr->data.array_lit.elements);
+            break;
+        case EXPR_CONDITIONAL:
+            expr_free(expr->data.conditional.condition);
+            expr_free(expr->data.conditional.then_expr);
+            expr_free(expr->data.conditional.else_expr);
             break;
     }
     free(expr);
@@ -261,7 +307,7 @@ Stmt *stmt_new_block(StmtList *stmts, SourceLocation loc) {
     return s;
 }
 
-Stmt *stmt_new_var_decl(char *type_name, char *name, Expr *init, int is_ptr, SourceLocation loc) {
+Stmt *stmt_new_var_decl(char *type_name, char *name, Expr *init, int is_ptr, int array_size, SourceLocation loc) {
     Stmt *s = malloc(sizeof(Stmt));
     s->type = STMT_VAR_DECL;
     s->loc = loc;
@@ -269,6 +315,7 @@ Stmt *stmt_new_var_decl(char *type_name, char *name, Expr *init, int is_ptr, Sou
     s->data.var_decl.name = str_dup(name);
     s->data.var_decl.init = init;
     s->data.var_decl.is_ptr = is_ptr;
+    s->data.var_decl.array_size = array_size;
     return s;
 }
 
@@ -528,11 +575,12 @@ void func_param_list_free(FuncParamList *list) {
 
 /* ── Struct Fields ──────────────────────────────────────────── */
 
-StructField struct_field_new(char *type_name, char *name, int is_ptr) {
+StructField struct_field_new(char *type_name, char *name, int is_ptr, int array_size) {
     StructField f;
     f.type_name = str_dup(type_name);
     f.name = str_dup(name);
     f.is_ptr = is_ptr;
+    f.array_size = array_size;
     return f;
 }
 
@@ -637,7 +685,8 @@ void generic_param_list_free(GenericParamList *list) {
 
 Decl *decl_new_func(char *return_type, char *name, FuncParamList *params,
                     GenericParamList *generic_params, Stmt *body,
-                    DecoratorList *decorators, int is_extern, int is_variadic, SourceLocation loc) {
+                    DecoratorList *decorators, int is_static, int is_extern,
+                    int is_variadic, SourceLocation loc) {
     Decl *d = malloc(sizeof(Decl));
     d->type = DECL_FUNC;
     d->loc = loc;
@@ -647,8 +696,24 @@ Decl *decl_new_func(char *return_type, char *name, FuncParamList *params,
     d->data.func.generic_params = generic_params;
     d->data.func.body = body;
     d->data.func.decorators = decorators;
+    d->data.func.is_static = is_static;
     d->data.func.is_extern = is_extern;
     d->data.func.is_variadic = is_variadic;
+    return d;
+}
+
+Decl *decl_new_global_var(char *type_name, char *name, Expr *init, int is_ptr,
+                          int is_static, int is_extern, int array_size, SourceLocation loc) {
+    Decl *d = malloc(sizeof(Decl));
+    d->type = DECL_GLOBAL_VAR;
+    d->loc = loc;
+    d->data.global_var.type_name = str_dup(type_name);
+    d->data.global_var.name = str_dup(name);
+    d->data.global_var.init = init;
+    d->data.global_var.is_ptr = is_ptr;
+    d->data.global_var.is_static = is_static;
+    d->data.global_var.is_extern = is_extern;
+    d->data.global_var.array_size = array_size;
     return d;
 }
 
@@ -713,6 +778,11 @@ void decl_free(Decl *decl) {
             generic_param_list_free(decl->data.func.generic_params);
             stmt_free(decl->data.func.body);
             decorator_list_free(decl->data.func.decorators);
+            break;
+        case DECL_GLOBAL_VAR:
+            free(decl->data.global_var.type_name);
+            free(decl->data.global_var.name);
+            expr_free(decl->data.global_var.init);
             break;
         case DECL_STRUCT:
             free(decl->data.struct_decl.name);
