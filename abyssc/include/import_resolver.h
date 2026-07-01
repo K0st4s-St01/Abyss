@@ -13,16 +13,80 @@ typedef struct {
 
 typedef struct {
     char *name;
+    char *target_type;
+} IRTypeAlias;
+
+typedef struct {
+    char *name;
+    int value;
+} IREnumVariant;
+
+typedef struct {
+    char *name;
+    IREnumVariant *variants;
+    int variant_count;
+} IREnum;
+
+typedef struct {
+    char *name;
+    char *type_name;
+    int is_ptr;
+    int array_size;
+} IRField;
+
+typedef struct {
+    char *name;
     char *return_type;
     IRParam *params;
     int param_count;
     int is_extern;
+    int is_static;
     int is_variadic;
 } IRFunc;
 
 typedef struct {
     char *name;
+    IRField *fields;
+    int field_count;
+    IRFunc *methods;
+    int method_count;
+} IRStruct;
+
+typedef struct {
+    char *return_type;
+    char *name;
+    IRParam *params;
+    int param_count;
+    int is_variadic;
+} IRInterfaceMethod;
+
+typedef struct {
+    char *name;
+    IRInterfaceMethod *methods;
+    int method_count;
+} IRInterface;
+
+typedef struct {
+    char *name;
+    char *type_name;
+    int is_ptr;
+    int is_extern;
+    int array_size;
+} IRGlobal;
+
+typedef struct {
+    char *name;
     char *version;
+    IRTypeAlias *aliases;
+    int alias_count;
+    IREnum *enums;
+    int enum_count;
+    IRInterface *interfaces;
+    int interface_count;
+    IRStruct *structs;
+    int struct_count;
+    IRGlobal *globals;
+    int global_count;
     IRFunc *funcs;
     int func_count;
 } IRMetadata;

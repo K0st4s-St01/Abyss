@@ -427,14 +427,20 @@ Token *lexer_make_operator(Lexer *lexer){
         case '~':
         	return token_new(loc,"~",Tilde);
         case '<':
-        	if(lexer_match(lexer,'<'))
+        	if(lexer_match(lexer,'<')) {
+                if(lexer_match(lexer,'='))
+                    return token_new(loc,"<<=",LeftShiftEquals);
          		return token_new(loc,"<<",LeftShift);
+            }
            if(lexer_match(lexer,'='))
            		return token_new(loc,"<=",LessEquals);
         	return token_new(loc,"<",Less);
         case '>':
-        	if(lexer_match(lexer,'>'))
+        	if(lexer_match(lexer,'>')) {
+                if(lexer_match(lexer,'='))
+                    return token_new(loc,">>=",RightShiftEquals);
          		return token_new(loc,">>",RightShift);
+            }
            if(lexer_match(lexer,'='))
            		return token_new(loc,">=",GreaterEquals);
         	return token_new(loc,">",Greater);

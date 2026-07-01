@@ -20,12 +20,15 @@ static Token *expect(Parser *p, TokenType type) {
     Token *t = peek(p);
     if (!t || t->type != type) {
         p->had_error = true;
-        p->panic_mode = true;
-        snprintf(p->error_msg, sizeof(p->error_msg),
-                 "expected token type %d, got %d at %s:%d:%d",
-                 type, t ? t->type : -1,
-                 t ? t->loc.filename : "?",
-                 t ? t->loc.line : 0, t ? t->loc.col : 0);
+        if (!p->panic_mode) {
+            p->panic_mode = true;
+            snprintf(p->error_msg, sizeof(p->error_msg),
+                     "expected %s, got %s at %s:%d:%d",
+                     token_type_name(type),
+                     t ? token_type_name(t->type) : "end of input",
+                     t ? t->loc.filename : "?",
+                     t ? t->loc.line : 0, t ? t->loc.col : 0);
+        }
         return NULL;
     }
     return advance(p);
@@ -131,6 +134,16 @@ static GenericParamList *parse_generic_params(Parser *p) {
     return params;
 }
 
+static bool reject_generic_syntax(Parser *p, const char *subject) {
+    if (!check(p, Less) && !check(p, Generic))
+        return false;
+    char msg[128];
+    snprintf(msg, sizeof(msg), "%s are not supported",
+             subject ? subject : "generics");
+    parser_error(p, msg);
+    return true;
+}
+
 static char *parse_type_name(Parser *p) {
     Token *t = peek(p);
     if (!t) return NULL;
@@ -139,7 +152,21 @@ static char *parse_type_name(Parser *p) {
         t->type == Void || t->type == Self) {
         char *name = strdup(t->text);
         advance(p);
+        if (t->type == Identifier && match(p, Dot)) {
+            Token *field = expect(p, Identifier);
+            if (field) {
+                size_t len = strlen(name);
+                size_t field_len = strlen(field->text);
+                name = realloc(name, len + field_len + 2);
+                name[len] = '.';
+                memcpy(name + len + 1, field->text, field_len);
+                name[len + field_len + 1] = '\0';
+            }
+        }
         if (check(p, Generic) || (t->type == Identifier && check(p, Less))) {
+            if (reject_generic_syntax(p, "generic type arguments")) {
+                return name;
+            }
             if (check(p, Less)) advance(p);
             GenericParamList *args = parse_generic_params(p);
             GenericParamList *cur = args;
@@ -199,7 +226,9 @@ static int get_binary_precedence(TokenType op) {
         case PercentEquals:
         case AmpersandEquals:
         case PipeEquals:
-        case CaretEquals:                     return 1;
+        case CaretEquals:
+        case LeftShiftEquals:
+        case RightShiftEquals:                return 1;
         case PipePipe:                        return 2;
         case Pipe:                            return 3;
         case Caret:                           return 4;
@@ -221,7 +250,8 @@ static int get_binary_precedence(TokenType op) {
 static bool is_assignment_op(TokenType op) {
     return op == Equals || op == PlusEquals || op == MinusEquals ||
            op == StarEquals || op == SlashEquals || op == AmpersandEquals ||
-           op == PercentEquals || op == PipeEquals || op == CaretEquals;
+           op == PercentEquals || op == PipeEquals || op == CaretEquals ||
+           op == LeftShiftEquals || op == RightShiftEquals;
 }
 
 static Expr *parse_primary(Parser *p) {
@@ -664,6 +694,16 @@ static bool is_var_decl_start(Parser *p) {
     if (!is_type_start(t) || p->pos + 1 >= p->tokens->size)
         return false;
     Token *next = p->tokens->toks[p->pos + 1];
+    if (t->type == Identifier && next && next->type == Dot) {
+        if (p->pos + 3 >= p->tokens->size)
+            return false;
+        Token *type_member = p->tokens->toks[p->pos + 2];
+        Token *after_type = p->tokens->toks[p->pos + 3];
+        return type_member && type_member->type == Identifier &&
+               after_type && (after_type->type == Identifier ||
+                              after_type->type == Generic ||
+                              after_type->type == Star);
+    }
     return next && (next->type == Identifier || next->type == Generic ||
                     next->type == Star);
 }
@@ -721,7 +761,7 @@ static Stmt *parse_statement(Parser *p) {
         return parse_var_decl(p);
 
     Expr *e = parse_expr(p);
-    match(p, Semicolon);
+    expect(p, Semicolon);
     return stmt_new_expr(e, t->loc);
 }
 
@@ -824,6 +864,7 @@ static StructFieldList *parse_struct_fields(Parser *p) {
 static Decl *parse_struct_decl(Parser *p) {
     Token *t = advance(p);
     Token *name = expect(p, Identifier);
+    reject_generic_syntax(p, "generic structs");
     GenericParamList *generic_params = parse_generic_params(p);
     expect(p, LBrace);
 
@@ -836,11 +877,25 @@ static Decl *parse_struct_decl(Parser *p) {
             if (check(p, RBrace) || check(p, EndOfFile)) break;
         }
         Token *mt = peek(p);
+        int is_static = 0;
+        int is_extern = 0;
+        while (mt && (mt->type == Static || mt->type == Extern)) {
+            if (mt->type == Static) is_static = 1;
+            if (mt->type == Extern) is_extern = 1;
+            advance(p);
+            mt = peek(p);
+        }
+        if (is_static && is_extern) {
+            parser_error(p, "static extern methods are not supported");
+            synchronize_statement(p);
+            continue;
+        }
         if (is_type_start(mt)) {
             char *ty = parse_type_name(p);
             Token *mname = expect(p, Identifier);
             if (check(p, LParen)) {
-                Decl *method = parse_func_decl(p, ty, mname->text, NULL, 0, 0, mt->loc);
+                Decl *method = parse_func_decl(p, ty, mname->text, NULL,
+                                               is_static, is_extern, mt->loc);
                 decl_list_append(&methods, method);
             }
             free(ty);
@@ -856,6 +911,7 @@ static Decl *parse_struct_decl(Parser *p) {
 static Decl *parse_interface_decl(Parser *p) {
     Token *t = advance(p);
     Token *name = expect(p, Identifier);
+    reject_generic_syntax(p, "generic interfaces");
     GenericParamList *generic_params = parse_generic_params(p);
     expect(p, LBrace);
 
@@ -868,10 +924,11 @@ static Decl *parse_interface_decl(Parser *p) {
         char *ret = parse_type_name(p);
         Token *mname = expect(p, Identifier);
         expect(p, LParen);
-        FuncParamList *params = parse_param_list(p, NULL);
+        int is_variadic = 0;
+        FuncParamList *params = parse_param_list(p, &is_variadic);
         expect(p, RParen);
         expect(p, Semicolon);
-        InterfaceMethod m = interface_method_new(ret, mname->text, params);
+        InterfaceMethod m = interface_method_new(ret, mname->text, params, is_variadic);
         interface_method_list_append(&methods, m);
         free(ret);
     }
@@ -948,6 +1005,7 @@ static Decl *parse_top_level(Parser *p) {
     if (is_type_start(t)) {
         char *ty = parse_type_name(p);
         Token *name = expect(p, Identifier);
+        reject_generic_syntax(p, "generic functions");
         GenericParamList *generic_params = parse_generic_params(p);
         if (check(p, LParen)) {
             Decl *d = parse_func_decl(p, ty, name->text, generic_params,

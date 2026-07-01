@@ -109,6 +109,7 @@ typedef struct {
     char *return_type;
     char *name;
     FuncParamList *params;
+    int is_variadic;
 } InterfaceMethod;
 
 typedef struct InterfaceMethodList {
@@ -175,7 +176,7 @@ StructFieldList *struct_field_list_new(void);
 void struct_field_list_append(StructFieldList **list, StructField field);
 void struct_field_list_free(StructFieldList *list);
 
-InterfaceMethod interface_method_new(char *return_type, char *name, FuncParamList *params);
+InterfaceMethod interface_method_new(char *return_type, char *name, FuncParamList *params, int is_variadic);
 InterfaceMethodList *interface_method_list_new(void);
 void interface_method_list_append(InterfaceMethodList **list, InterfaceMethod method);
 void interface_method_list_free(InterfaceMethodList *list);

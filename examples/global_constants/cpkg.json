@@ -1,0 +1,7 @@
+{
+  "name": "global_constants",
+  "version": "0.1.0",
+  "compiler": "abyssc",
+  "source": ["main.as"],
+  "include": ["."]
+}

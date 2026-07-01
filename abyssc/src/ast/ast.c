@@ -611,11 +611,12 @@ void struct_field_list_free(StructFieldList *list) {
 
 /* ── Interface Methods ──────────────────────────────────────── */
 
-InterfaceMethod interface_method_new(char *return_type, char *name, FuncParamList *params) {
+InterfaceMethod interface_method_new(char *return_type, char *name, FuncParamList *params, int is_variadic) {
     InterfaceMethod m;
     m.return_type = str_dup(return_type);
     m.name = str_dup(name);
     m.params = params;
+    m.is_variadic = is_variadic;
     return m;
 }
 

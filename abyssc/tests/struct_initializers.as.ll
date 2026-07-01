@@ -1,8 +1,11 @@
 ; ModuleID = '/home/xator/Abyss/abyssc/tests/struct_initializers.as'
 source_filename = "/home/xator/Abyss/abyssc/tests/struct_initializers.as"
 
-%Pair = type { i32, i32, i32 }
 %Point = type { i32, i32 }
+%Pair = type { i32, i32, i32 }
+
+@origin = global %Point { i32 1, i32 2 }
+@global_partial = global %Pair { i32 6, i32 0, i32 0 }
 
 define i32 @main(ptr %argc, ptr %argv) {
 entry:
@@ -51,5 +54,15 @@ entry:
   %third21 = getelementptr %Pair, ptr %partial, i32 0, i32 2
   %load22 = load i32, ptr %third21, align 4
   %add23 = add i32 %add20, %load22
-  ret i32 %add23
+  %load24 = load i32, ptr @origin, align 4
+  %add25 = add i32 %add23, %load24
+  %load26 = load i32, ptr getelementptr (%Point, ptr @origin, i32 0, i32 1), align 4
+  %add27 = add i32 %add25, %load26
+  %load28 = load i32, ptr @global_partial, align 4
+  %add29 = add i32 %add27, %load28
+  %load30 = load i32, ptr getelementptr (%Pair, ptr @global_partial, i32 0, i32 1), align 4
+  %add31 = add i32 %add29, %load30
+  %load32 = load i32, ptr getelementptr (%Pair, ptr @global_partial, i32 0, i32 2), align 4
+  %add33 = add i32 %add31, %load32
+  ret i32 %add33
 }

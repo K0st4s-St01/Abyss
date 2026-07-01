@@ -16,11 +16,23 @@ extern str strstr(str haystack, str needle);
 extern void* memcpy(void* dst, void* src, i64 n);
 extern void* memmove(void* dst, void* src, i64 n);
 extern void* memset(void* ptr, i32 val, i64 n);
+extern i32 memcmp(void* a, void* b, i64 n);
 extern i32 atoi(str s);
 extern i64 atol(str s);
 extern f64 atof(str s);
 extern i32 abs(i32 x);
 extern i64 llabs(i64 x);
+extern f64 fabs(f64 x);
+extern f64 sqrt(f64 x);
+extern f64 pow(f64 base, f64 exp);
+extern f64 floor(f64 x);
+extern f64 ceil(f64 x);
+extern i32 isalpha(i32 c);
+extern i32 isdigit(i32 c);
+extern i32 isalnum(i32 c);
+extern i32 isspace(i32 c);
+extern i32 toupper(i32 c);
+extern i32 tolower(i32 c);
 extern i32 rand();
 extern void srand(u32 seed);
 extern void exit(i32 code);
@@ -87,6 +99,71 @@ str str_find(str haystack, str needle) {
     return strstr(haystack, needle);
 }
 
+i32 str_contains(str haystack, str needle) {
+    str found = strstr(haystack, needle);
+    if (found) {
+        return 1;
+    }
+    return 0;
+}
+
+i32 str_starts_with(str s, str prefix) {
+    i64 n = strlen(prefix);
+    i32 r = strncmp(s, prefix, n);
+    if (r == 0) {
+        return 1;
+    }
+    return 0;
+}
+
+i32 str_ends_with(str s, str suffix) {
+    i64 len = strlen(s);
+    i64 suffix_len = strlen(suffix);
+    if (suffix_len > len) {
+        return 0;
+    }
+
+    i64 offset = len - suffix_len;
+    i64 i = 0;
+    while (i < suffix_len) {
+        if ((i32)s[offset + i] != (i32)suffix[i]) {
+            return 0;
+        }
+        i++;
+    }
+    return 1;
+}
+
+i32 str_index_of(str haystack, str needle) {
+    i64 needle_len = strlen(needle);
+    if (needle_len == 0) {
+        return 0;
+    }
+
+    i32 i = 0;
+    while ((i32)haystack[i] != 0) {
+        i64 j = 0;
+        while (j < needle_len) {
+            if ((i32)haystack[i + j] == 0) {
+                return -1;
+            }
+            if ((i32)haystack[i + j] != (i32)needle[j]) {
+                break;
+            }
+            j++;
+        }
+        if (j == needle_len) {
+            return i;
+        }
+        i++;
+    }
+    return -1;
+}
+
+i32 str_char_at(str s, i64 index) {
+    return (i32)s[index];
+}
+
 i32 str_to_i32(str s) {
     return atoi(s);
 }
@@ -131,6 +208,18 @@ void* mem_set(void* ptr, i32 val, i64 n) {
 
 void* mem_zero(void* ptr, i64 n) {
     return memset(ptr, 0, n);
+}
+
+i32 mem_compare(void* a, void* b, i64 n) {
+    return memcmp(a, b, n);
+}
+
+i32 mem_eq(void* a, void* b, i64 n) {
+    i32 r = memcmp(a, b, n);
+    if (r == 0) {
+        return 1;
+    }
+    return 0;
 }
 
 # ── Math utilities ──────────────────────────────────────────
@@ -200,6 +289,98 @@ i64 math_clamp_i64(i64 val, i64 lo, i64 hi) {
     }
     return val;
 }
+
+f64 math_abs_f64(f64 x) {
+    return fabs(x);
+}
+
+f64 math_sqrt(f64 x) {
+    return sqrt(x);
+}
+
+f64 math_pow(f64 base, f64 exp) {
+    return pow(base, exp);
+}
+
+f64 math_floor(f64 x) {
+    return floor(x);
+}
+
+f64 math_ceil(f64 x) {
+    return ceil(x);
+}
+
+f64 math_min_f64(f64 a, f64 b) {
+    if (a < b) {
+        return a;
+    }
+    return b;
+}
+
+f64 math_max_f64(f64 a, f64 b) {
+    if (a > b) {
+        return a;
+    }
+    return b;
+}
+
+f64 math_clamp_f64(f64 val, f64 lo, f64 hi) {
+    if (val < lo) {
+        return lo;
+    }
+    if (val > hi) {
+        return hi;
+    }
+    return val;
+}
+
+i32 math_in_range(i32 val, i32 lo, i32 hi) {
+    if (val < lo) {
+        return 0;
+    }
+    if (val > hi) {
+        return 0;
+    }
+    return 1;
+}
+
+i32 math_in_range_i64(i64 val, i64 lo, i64 hi) {
+    if (val < lo) {
+        return 0;
+    }
+    if (val > hi) {
+        return 0;
+    }
+    return 1;
+}
+
+# ── Character utilities ─────────────────────────────────────
+
+i32 char_is_alpha(i32 c) {
+    return isalpha(c);
+}
+
+i32 char_is_digit(i32 c) {
+    return isdigit(c);
+}
+
+i32 char_is_alnum(i32 c) {
+    return isalnum(c);
+}
+
+i32 char_is_space(i32 c) {
+    return isspace(c);
+}
+
+i32 char_to_upper(i32 c) {
+    return toupper(c);
+}
+
+i32 char_to_lower(i32 c) {
+    return tolower(c);
+}
+
+# ── Bool utilities ──────────────────────────────────────────
 
 i32 bool_not(i32 value) {
     if (!value) {

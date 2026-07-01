@@ -73,9 +73,11 @@ typedef enum{
   ,Less
   ,LessEquals
   ,LeftShift
+  ,LeftShiftEquals
   ,Greater
   ,GreaterEquals
   ,RightShift
+  ,RightShiftEquals
   ,Equals
   ,EqualsEquals
   ,BangEquals
@@ -112,6 +114,7 @@ typedef struct{
 
 Token* token_new(SourceLocation loc,char* text,TokenType type);
 void token_free(Token *token);
+const char *token_type_name(TokenType type);
 bool token_is_primitive_type(Token *token);
 bool token_is_literal(Token *token);
 bool token_is_keyword(Token *token);

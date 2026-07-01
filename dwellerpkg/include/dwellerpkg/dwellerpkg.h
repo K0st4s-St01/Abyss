@@ -12,7 +12,24 @@ typedef struct {
     char *name;
     char *type_name;
     int is_ptr;
+    int array_size;
 } PkgField;
+
+typedef struct {
+    char *name;
+    char *target_type;
+} PkgTypeAlias;
+
+typedef struct {
+    char *name;
+    int value;
+} PkgEnumVariant;
+
+typedef struct {
+    char *name;
+    PkgEnumVariant *variants;
+    int variant_count;
+} PkgEnum;
 
 typedef struct {
     char *name;
@@ -34,6 +51,7 @@ typedef struct {
     PkgGenericParam *generic_params;
     int generic_param_count;
     bool is_extern;
+    bool is_static;
     bool is_variadic;
 } PkgFunc;
 
@@ -43,13 +61,45 @@ typedef struct {
     int field_count;
     PkgGenericParam *generic_params;
     int generic_param_count;
+    PkgFunc *methods;
+    int method_count;
 } PkgStruct;
+
+typedef struct {
+    char *return_type;
+    char *name;
+    PkgParam *params;
+    int param_count;
+    bool is_variadic;
+} PkgInterfaceMethod;
+
+typedef struct {
+    char *name;
+    PkgInterfaceMethod *methods;
+    int method_count;
+} PkgInterface;
+
+typedef struct {
+    char *name;
+    char *type_name;
+    int is_ptr;
+    bool is_extern;
+    int array_size;
+} PkgGlobal;
 
 typedef struct {
     char *name;
     char *version;
+    PkgTypeAlias *aliases;
+    int alias_count;
+    PkgEnum *enums;
+    int enum_count;
+    PkgInterface *interfaces;
+    int interface_count;
     PkgStruct *structs;
     int struct_count;
+    PkgGlobal *globals;
+    int global_count;
     PkgFunc *funcs;
     int func_count;
 } PkgMetadata;

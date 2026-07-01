@@ -301,6 +301,8 @@ int main(int argc, char **argv) {
     int compile = 0;
     int link_exe = 0;
     const char *output_name = NULL;
+    const char *package_prefix = NULL;
+    int had_error = 0;
 
     if(argc < 2){
         puts("abyssc:");
@@ -328,11 +330,17 @@ int main(int argc, char **argv) {
             if (i + 1 < argc) output_name = argv[++i];
             continue;
         }
+        if (strcmp(argv[i], "--package-prefix") == 0 ||
+            strcmp(argv[i], "-package-prefix") == 0) {
+            if (i + 1 < argc) package_prefix = argv[++i];
+            continue;
+        }
         if (strcmp(argv[i], "-f") == 0) continue;
 
         char *source = read_file(argv[i]);
         if (source == NULL) {
             fprintf(stderr, "Error: cannot read file '%s'\n", argv[i]);
+            had_error = 1;
             continue;
         }
 
@@ -347,6 +355,7 @@ int main(int argc, char **argv) {
         Program *prog = parse_program(parser, argv[i]);
 
         if (!parser->had_error) {
+            bool imports_ok = true;
             /* Resolve imports: inject declarations from package metadata */
             {
                 int import_count = 0;
@@ -360,6 +369,16 @@ int main(int argc, char **argv) {
                         if (dl->decl && dl->decl->type == DECL_IMPORT)
                             imports[idx++] = dl->decl;
                     for (int j = 0; j < import_count; j++) {
+                        int duplicate = 0;
+                        for (int k = 0; k < j; k++) {
+                            if (strcmp(imports[k]->data.import.module_name,
+                                       imports[j]->data.import.module_name) == 0) {
+                                duplicate = 1;
+                                break;
+                            }
+                        }
+                        if (duplicate) continue;
+
                         char *lib_path = NULL;
                         if (ir_inject_import(imports[j]->data.import.module_name, prog, imports[j], &lib_path)) {
                             fprintf(stderr, "imported '%s' from %s\n",
@@ -370,28 +389,38 @@ int main(int argc, char **argv) {
                                 lib_paths = realloc(lib_paths, sizeof(char*) * lib_cap);
                             }
                             lib_paths[lib_count++] = lib_path;
+                        } else {
+                            imports_ok = false;
+                            had_error = 1;
                         }
                     }
                     free(imports);
                 }
             }
 
-            SemanticAnalyzer *analyzer = semantic_analyzer_new();
-            bool ok = semantic_analyze(analyzer, prog);
-            if (!ok) {
-                semantic_print_errors(analyzer);
+            bool ok = false;
+            if (imports_ok) {
+                SemanticAnalyzer *analyzer = semantic_analyzer_new();
+                ok = semantic_analyze(analyzer, prog);
+                if (!ok) {
+                    semantic_print_errors(analyzer);
+                    had_error = 1;
+                }
+                semantic_analyzer_free(analyzer);
             }
-            semantic_analyzer_free(analyzer);
 
             if (ok && (emit_llvm || compile || link_exe)) {
                 CodegenCtx *cg = codegen_new(argv[i]);
+                codegen_set_package_prefix(cg, package_prefix);
                 if (codegen_program(cg, prog)) {
                     char llname[512];
                     snprintf(llname, sizeof(llname), "%s.ll", argv[i]);
                     if (codegen_write_ir(cg, llname))
                         fprintf(stderr, "wrote %s\n", llname);
-                    else
+                    else {
                         fprintf(stderr, "error writing %s\n", llname);
+                        had_error = 1;
+                    }
 
                     if (compile || link_exe) {
                         char oname[512];
@@ -428,9 +457,13 @@ int main(int argc, char **argv) {
                         }
                         fprintf(stderr, "%s\n", cmd);
                         int ret = system(cmd);
-                        if (ret != 0)
+                        if (ret != 0) {
                             fprintf(stderr, "clang failed with exit code %d\n", ret);
+                            had_error = 1;
+                        }
                     }
+                } else {
+                    had_error = 1;
                 }
                 codegen_free(cg);
             } else if (ok) {
@@ -438,6 +471,8 @@ int main(int argc, char **argv) {
                     print_decl(dl->decl, 0);
                 }
             }
+        } else {
+            had_error = 1;
         }
 
         program_free(prog);
@@ -450,5 +485,5 @@ int main(int argc, char **argv) {
     for (int i = 0; i < lib_count; i++) free(lib_paths[i]);
     free(lib_paths);
 
-    return 0;
+    return had_error ? 1 : 0;
 }
